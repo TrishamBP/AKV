@@ -3,19 +3,14 @@
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from akv.agent.types import RECOVERED_TOOL_CALLS_KEY, JsonDict
+from akv.agent.types import JsonDict
 
 CANONICAL_ROLES = ("system", "developer", "user", "assistant", "tool")
 
 
 def history_tool_calls(message: Mapping[str, Any]) -> list[JsonDict]:
-    """Read executable calls without replacing the provider's replay fields."""
-    return list(message.get("tool_calls") or message.get(RECOVERED_TOOL_CALLS_KEY, {}).get("tool_calls", ()))
-
-
-def message_for_wire(message: Mapping[str, Any]) -> JsonDict:
-    """Exclude client execution metadata from model inputs."""
-    return {key: value for key, value in message.items() if key != RECOVERED_TOOL_CALLS_KEY}
+    """Read structured tool calls from a Chat Completions message."""
+    return list(message.get("tool_calls") or ())
 
 
 def canonical_role(message: JsonDict) -> str:

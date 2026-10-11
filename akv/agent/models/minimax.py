@@ -1,78 +1,56 @@
-"""MiniMax tool schemas and shared malformed-argument replay copies."""
+"""MiniMax token counter with tracing matched to its chat template."""
 
 from __future__ import annotations
 
-import json
-from collections.abc import Iterable
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
-from akv.agent.types import JsonDict
+from .jinja import JinjaTokenCounter
 
-
-def reject_json_constant(value: str) -> None:
-    raise ValueError(f"Invalid JSON constant: {value}")
-
-
-def adapt_tool_call_history(messages: Iterable[JsonDict]) -> tuple[list[JsonDict], int]:
-    """Wrap non-object/invalid JSON strings only in the replay representation.
-
-    Preserve message order, IDs, reasoning and original argument bytes. Valid
-    object strings remain verbatim; adapting an already adapted view is a no-op.
-    The repair count describes the wire view, not executable tool attempts.
-    """
-    adapted = []
-    repairs = 0
-    for message in messages:
-        calls = message.get("tool_calls")
-        if message.get("role") != "assistant" or not isinstance(calls, list):
-            adapted.append(message)
-            continue
-        replay_calls = []
-        changed = False
-        for call in calls:
-            function = call.get("function") if isinstance(call, dict) else None
-            arguments = function.get("arguments") if isinstance(function, dict) else None
-            if not isinstance(arguments, str):
-                replay_calls.append(call)
-                continue
-            try:
-                value = json.loads(arguments, parse_constant=reject_json_constant)
-            except ValueError:
-                value = None
-            if isinstance(value, dict):
-                replay_calls.append(call)
-                continue
-            replay_calls.append(
-                {
-                    **call,
-                    "function": {
-                        **function,
-                        "arguments": json.dumps(
-                            {"_malformed_arguments": arguments},
-                            ensure_ascii=False,
-                            separators=(",", ":"),
-                        ),
-                    },
-                }
-            )
-            repairs += 1
-            changed = True
-        adapted.append({**message, "tool_calls": replay_calls} if changed else message)
-    return adapted, repairs
+if TYPE_CHECKING:
+    from jinja2 import nodes
 
 
-def prepare_minimax_tools(tools):
-    """Match SGLang's Function.model_dump before MiniMax renders whole schemas."""
-    prepared = []
-    for tool in tools:
-        raw = tool["function"]
-        function = {
-            "description": raw.get("description"),
-            "name": raw["name"],
-            "parameters": raw.get("parameters"),
-            "strict": raw.get("strict", False),
-        }
-        defer = raw.get("defer_loading", tool.get("defer_loading"))
-        if defer is not None:
-            function["defer_loading"] = defer
-        prepared.append({"type": tool.get("type", "function"), "function": function})
-    return prepared or None
+class MiniMaxTokenCounter(JinjaTokenCounter):
+    """Reuse Jinja rendering while preserving MiniMax's text-processing macro."""
+
+    def __init__(self, model_path: str | Path) -> None:
+        super().__init__(model_path, preserve_macro=preserve_format_macro)
+
+
+VISIBLE_TEXT_TEMPLATE = """
+{% macro visible_text(content) %}
+{% if content is string %}{{ content }}
+{% elif content is iterable and content is not mapping %}
+{% for item in content %}
+{% if item is mapping and item.type == 'text' %}{{ item.text }}
+{% elif item is string %}{{ item }}{% endif %}
+{% endfor %}
+{% else %}{{ content }}{% endif %}
+{% endmacro %}
+"""
+
+
+def preserve_format_macro(node: nodes.Macro) -> bool:
+    """Keep MiniMax's pure text macro intact before the template splits its output."""
+    if node.name != "visible_text":
+        return False
+    import copy
+
+    from jinja2 import Environment, nodes
+    from jinja2.visitor import NodeTransformer
+
+    class StripWhitespace(NodeTransformer):
+        def visit_TemplateData(
+            self, item: nodes.TemplateData, *args: Any, **kwargs: Any
+        ) -> nodes.TemplateData | None:
+            return None if not item.data.strip() else item
+
+        def visit_Output(self, item: nodes.Output, *args: Any, **kwargs: Any) -> nodes.Output | None:
+            item = self.generic_visit(item, *args, **kwargs)
+            return item if item.nodes else None
+
+    expected = next(Environment().parse(VISIBLE_TEXT_TEMPLATE).find_all(nodes.Macro))
+    if StripWhitespace().visit(copy.deepcopy(node)).dump() != StripWhitespace().visit(expected).dump():
+        raise ValueError("Unrecognized MiniMax visible_text macro")
+    return True

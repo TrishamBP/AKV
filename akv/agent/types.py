@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
 JsonDict = dict[str, Any]
-RECOVERED_TOOL_CALLS_KEY = "contextualize_recovered_tool_calls"
 
 
 @dataclass(frozen=True)
@@ -30,7 +29,6 @@ class ToolCall:
     id: str
     name: str
     arguments: str
-    server_name: str | None = None
 
     def as_openai(self) -> JsonDict:
         return {
@@ -39,14 +37,6 @@ class ToolCall:
             "function": {"name": self.name, "arguments": self.arguments},
         }
 
-    def as_recovered(self) -> JsonDict:
-        """Serialize client-side recovery metadata without changing wire calls."""
-
-        value = self.as_openai()
-        if self.server_name is not None:
-            value["server_name"] = self.server_name
-        return value
-
 
 @dataclass(frozen=True)
 class GeneratedMessage:
@@ -54,12 +44,6 @@ class GeneratedMessage:
     tool_calls: tuple[ToolCall, ...] = ()
     role: str = "assistant"
     reasoning_content: str | None = None
-    recovered_tool_calls: tuple[ToolCall, ...] = ()
-    recovered_tool_call_source: str | None = None
-
-    @property
-    def execution_tool_calls(self) -> tuple[ToolCall, ...]:
-        return self.tool_calls or self.recovered_tool_calls
 
     def as_openai(self, *, include_reasoning_content: bool = False) -> JsonDict:
         message: JsonDict = {"role": self.role, "content": self.content}
@@ -67,20 +51,6 @@ class GeneratedMessage:
             message["tool_calls"] = [call.as_openai() for call in self.tool_calls]
         if include_reasoning_content and isinstance(self.reasoning_content, str):
             message["reasoning_content"] = self.reasoning_content
-        return message
-
-    def as_history(self, *, include_reasoning_content: bool = False) -> JsonDict:
-        """Keep recovered calls as client metadata; preserve their source text."""
-        message = self.as_openai(
-            include_reasoning_content=(
-                include_reasoning_content or self.recovered_tool_call_source == "reasoning_content"
-            )
-        )
-        if self.recovered_tool_calls:
-            message[RECOVERED_TOOL_CALLS_KEY] = {
-                "source": self.recovered_tool_call_source,
-                "tool_calls": [call.as_recovered() for call in self.recovered_tool_calls],
-            }
         return message
 
 
@@ -105,6 +75,7 @@ class PolicyRequest:
     api_style: str | None = None
     completed_call_message_ids: Sequence[int] = ()
     prompt_end_message_ids: Mapping[int, int] = field(default_factory=dict)
+    chat_template_kwargs: JsonDict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -118,8 +89,78 @@ class ContextDecision:
 
 
 @dataclass(frozen=True)
+class CacheOperation:
+    """Chosen drops and optional reposition at one message boundary."""
+
+    message_id: int
+    drop_message_ids: tuple[int, ...] = ()
+    reposition: bool = False
+
+    def __post_init__(self) -> None:
+        ids = tuple(self.drop_message_ids)
+        if type(self.message_id) is not int or self.message_id < 0:
+            raise ValueError("Cache operation requires a nonnegative message ID")
+        if any(type(i) is not int or not 0 <= i <= self.message_id for i in ids):
+            raise ValueError("Cache operation cannot drop invalid or future message IDs")
+        if len(ids) != len(set(ids)) or type(self.reposition) is not bool:
+            raise ValueError("Cache operation requires unique IDs and a boolean reposition")
+        if not ids and not self.reposition:
+            raise ValueError("Cache operation must contain a drop or reposition")
+        object.__setattr__(self, "drop_message_ids", tuple(sorted(ids)))
+
+
+@dataclass(frozen=True)
+class CacheState:
+    """Caller-owned operation history and the last processed message prefix.
+
+    This contains chosen instructions, not server acknowledgements or GPU data.
+    Keep a separate state for each conversation branch. Policy changes are not
+    recorded: each call supplies the rules or actions for its current boundary.
+    """
+
+    operations: tuple[CacheOperation, ...] = ()
+    message_count: int = 0
+    history_digest: str = ""
+    context_digest: str = ""
+
+    def __post_init__(self) -> None:
+        if type(self.message_count) is not int or self.message_count < 0:
+            raise ValueError("Cache state message_count must be nonnegative")
+        operations = tuple(self.operations)
+        previous, dropped = -1, set()
+        for operation in operations:
+            if not isinstance(operation, CacheOperation):
+                raise ValueError("Cache state requires CacheOperation entries")
+            if not previous < operation.message_id < self.message_count:
+                raise ValueError("Cache operations must have increasing processed boundaries")
+            if dropped.intersection(operation.drop_message_ids):
+                raise ValueError("Cache state cannot delete the same message twice")
+            previous = operation.message_id
+            dropped.update(operation.drop_message_ids)
+        for digest in (self.history_digest, self.context_digest):
+            valid = isinstance(digest, str) and (
+                len(digest) == 64 and all(c in "0123456789abcdef" for c in digest)
+                if self.message_count
+                else digest == ""
+            )
+            if not valid:
+                raise ValueError("Cache state digests must match its processed prefix")
+        object.__setattr__(self, "operations", operations)
+
+    def to_dict(self) -> JsonDict:
+        """Return a private JSON-serializable snapshot."""
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> CacheState:
+        data = dict(value)
+        data["operations"] = tuple(CacheOperation(**item) for item in data.get("operations", ()))
+        return cls(**data)
+
+
+@dataclass(frozen=True)
 class ChatMessageTokenLayout:
-    """Canonical message end offsets, including the injected protocol prefix."""
+    """Token ownership for final request messages and the generation prefix."""
 
     message_ends: tuple[int, ...]
     generation_tokens: int
@@ -139,6 +180,7 @@ class ChatTokenCounter(Protocol):
         enable_thinking: bool | None,
         reasoning_effort: str | None,
         api_style: str | None,
+        chat_template_kwargs: JsonDict | None = None,
     ) -> int: ...
 
     def message_layout(
@@ -149,6 +191,7 @@ class ChatTokenCounter(Protocol):
         enable_thinking: bool | None,
         reasoning_effort: str | None,
         api_style: str | None,
+        chat_template_kwargs: JsonDict | None = None,
     ) -> ChatMessageTokenLayout: ...
 
 

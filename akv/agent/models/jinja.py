@@ -1,52 +1,23 @@
-"""Shared Jinja rendering and token ownership for MiniMax and MiroThinker."""
+"""Jinja token counter, API normalization, and message token ownership."""
 
 from __future__ import annotations
 
-import copy
 import json
 import re
 import uuid
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from itertools import pairwise
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 from jinja2 import Environment, nodes
 from jinja2.visitor import NodeTransformer
 from tokenizers import Tokenizer
 
 from akv.agent.types import ChatMessageTokenLayout, JsonDict
-
-from .models.minimax import prepare_minimax_tools
-
-# Match SGLang's pure MiniMax formatting macro. Instrumenting its temporary
-# string corrupts markers when the template later splits it at </think>.
-_MINIMAX_VISIBLE_TEXT = """
-{% macro visible_text(content) %}
-{% if content is string %}{{ content }}
-{% elif content is iterable and content is not mapping %}
-{% for item in content %}
-{% if item is mapping and item.type == 'text' %}{{ item.text }}
-{% elif item is string %}{{ item }}{% endif %}
-{% endfor %}
-{% else %}{{ content }}{% endif %}
-{% endmacro %}
-"""
-
-
-def macro_structure(node: nodes.Node) -> str:
-    class StripWhitespace(NodeTransformer):
-        def visit_TemplateData(self, item, *args, **kwargs):
-            return None if not item.data.strip() else item
-
-        def visit_Output(self, item, *args, **kwargs):
-            item = self.generic_visit(item, *args, **kwargs)
-            return item if item.nodes else None
-
-    return StripWhitespace().visit(copy.deepcopy(node)).dump()
 
 
 @dataclass(frozen=True)
@@ -63,15 +34,12 @@ class ChatTemplateTokenProvenance:
 class TraceTemplateOutputs(NodeTransformer):
     """Wrap template output nodes with active message-loop markers."""
 
-    def __init__(self, *, minimax: bool = False) -> None:
+    def __init__(self, *, preserve_macro: Callable[[nodes.Macro], bool] | None = None) -> None:
         self._loop_vars: list[str] = []
-        self._minimax = minimax
+        self._preserve_macro = preserve_macro
 
-    def visit_Macro(self, node: nodes.Macro, *args, **kwargs):
-        if self._minimax and node.name == "visible_text":
-            expected = next(Environment().parse(_MINIMAX_VISIBLE_TEXT).find_all(nodes.Macro))
-            if macro_structure(node) != macro_structure(expected):
-                raise ValueError("Unrecognized MiniMax visible_text macro")
+    def visit_Macro(self, node: nodes.Macro, *args: Any, **kwargs: Any) -> nodes.Macro:
+        if self._preserve_macro is not None and self._preserve_macro(node):
             return node
         return self.generic_visit(node, *args, **kwargs)
 
@@ -86,7 +54,7 @@ class TraceTemplateOutputs(NodeTransformer):
             return names
         return []
 
-    def visit_For(self, node: nodes.For, *args, **kwargs):
+    def visit_For(self, node: nodes.For, *args: Any, **kwargs: Any) -> nodes.For:
         names = self.target_names(node.target)
         self._loop_vars.extend(names)
         try:
@@ -117,7 +85,7 @@ class TraceTemplateOutputs(NodeTransformer):
     def marker_output(self, phase: str, lineno: int) -> nodes.Output:
         return nodes.Output([self.marker_call(phase, lineno)]).set_lineno(lineno)
 
-    def visit_If(self, node: nodes.If, *args, **kwargs):
+    def visit_If(self, node: nodes.If, *args: Any, **kwargs: Any) -> nodes.If:
         traces_generation = self.references_generation_prompt(node.test)
         node = self.generic_visit(node, *args, **kwargs)
         if traces_generation:
@@ -128,7 +96,7 @@ class TraceTemplateOutputs(NodeTransformer):
             ]
         return node
 
-    def visit_Output(self, node: nodes.Output, *args, **kwargs):
+    def visit_Output(self, node: nodes.Output, *args: Any, **kwargs: Any) -> nodes.Output:
         traces_generation = self.references_generation_prompt(node)
         node = self.generic_visit(node, *args, **kwargs)
         traced_nodes = [
@@ -149,9 +117,16 @@ class TraceTemplateOutputs(NodeTransformer):
 class ChatTemplateProvenanceRenderer:
     """Render a Jinja chat template while retaining exact message ownership."""
 
-    def __init__(self, environment: Environment, chat_template: str) -> None:
-        minimax = "ns.last_user_index" in chat_template and "<minimax:tool_call>" in chat_template
-        traced_ast = TraceTemplateOutputs(minimax=minimax).visit(environment.parse(chat_template))
+    def __init__(
+        self,
+        environment: Environment,
+        chat_template: str,
+        *,
+        preserve_macro: Callable[[nodes.Macro], bool] | None = None,
+    ) -> None:
+        traced_ast = TraceTemplateOutputs(preserve_macro=preserve_macro).visit(
+            environment.parse(chat_template)
+        )
         code = environment.compile(traced_ast)
         self._template = environment.template_class.from_code(
             environment,
@@ -236,13 +211,13 @@ class ChatTemplateProvenanceRenderer:
 
     def render(
         self,
-        tokenizer: Any,
+        tokenizer: Tokenizer,
         messages: list[dict[str, Any]],
         *,
         tools: list[dict[str, Any]] | None,
         add_generation_prompt: bool,
         enable_thinking: bool | None,
-        template_globals: dict[str, Any] | None = None,
+        template_globals: JsonDict | None = None,
     ) -> ChatTemplateTokenProvenance:
         nonce = uuid.uuid4().hex
         marker_prefix = f"\x00contextualize-owner-{nonce}:"
@@ -312,6 +287,10 @@ def strftime_now(format_string: str) -> str:
     return datetime.now().strftime(format_string)
 
 
+def template_error(message: str) -> NoReturn:
+    raise ValueError(message)
+
+
 def compact_json_dumps(value: Any) -> str:
     return json.dumps(
         value,
@@ -322,10 +301,40 @@ def compact_json_dumps(value: Any) -> str:
     )
 
 
+def prepare_chat_template_tools(tools: Sequence[JsonDict]) -> list[JsonDict] | None:
+    """Match SGLang's Tool/Function schema defaults before template rendering."""
+    prepared = []
+    for tool in tools:
+        raw = tool["function"]
+        function = {
+            "description": raw.get("description"),
+            "name": raw["name"],
+            "parameters": raw.get("parameters"),
+            "strict": raw.get("strict", False),
+        }
+        defer = raw.get("defer_loading")
+        if defer is None:
+            defer = tool.get("defer_loading")
+        if defer is not None:
+            function["defer_loading"] = defer
+        prepared.append(
+            {
+                "type": tool.get("type", "function"),
+                "function": function,
+                "defer_loading": tool.get("defer_loading"),
+            }
+        )
+    return prepared or None
+
+
+def reject_json_constant(value: str) -> NoReturn:
+    raise ValueError(f"Invalid JSON constant: {value}")
+
+
 def prepare_chat_template_messages(
     messages: Sequence[JsonDict],
     *,
-    api_style: str = "minisglang",
+    api_style: str | None = "minisglang",
 ) -> list[JsonDict]:
     """Decode tool arguments while preserving each server's message view."""
     prepared: list[JsonDict] = []
@@ -370,9 +379,13 @@ def prepare_chat_template_messages(
                     arguments = function.get("arguments")
                     if isinstance(arguments, str):
                         try:
-                            function["arguments"] = json.loads(arguments)
-                        except json.JSONDecodeError:
-                            pass
+                            parsed = json.loads(arguments, parse_constant=reject_json_constant)
+                            if api_style == "sglang" and not isinstance(parsed, dict):
+                                raise ValueError("Tool arguments must be a JSON object")
+                            function["arguments"] = parsed
+                        except ValueError as error:
+                            if api_style == "sglang":
+                                raise ValueError("Tool arguments must be a valid JSON object") from error
                     call["function"] = function
                 calls.append(call)
             message["tool_calls"] = calls
@@ -388,66 +401,102 @@ def prepare_chat_template_messages(
     return prepared
 
 
-class JinjaEncoder:
+class JinjaTokenCounter:
     """Keep a local tokenizer, chat template and ownership renderer together."""
 
-    def __init__(self, path: Path, model_type: str | None):
-        self.model_type = model_type
+    def __init__(
+        self, model_path: str | Path, *, preserve_macro: Callable[[nodes.Macro], bool] | None = None
+    ) -> None:
+        self.model_path = Path(model_path)
+        path = self.model_path
         tokenizer_path = path / "tokenizer.json"
         template_path = path / "chat_template.jinja"
-        environment = Environment(trim_blocks=True, lstrip_blocks=True)
-        environment.filters["tojson"] = json_dumps
-        environment.globals["strftime_now"] = strftime_now
-        template_source = template_path.read_text(encoding="utf-8")
-        self._template = environment.from_string(template_source)
-        self._provenance_renderer = ChatTemplateProvenanceRenderer(
-            environment,
-            template_source,
-        )
-        self._tokenizer = Tokenizer.from_file(str(tokenizer_path))
         tokenizer_config_path = path / "tokenizer_config.json"
         tokenizer_config = (
             json.loads(tokenizer_config_path.read_text(encoding="utf-8"))
             if tokenizer_config_path.is_file()
             else {}
         )
+        environment = Environment(trim_blocks=True, lstrip_blocks=True)
+        environment.filters["tojson"] = json_dumps
+        environment.globals["strftime_now"] = strftime_now
+        environment.globals["raise_exception"] = template_error
+        template_source = (
+            template_path.read_text(encoding="utf-8")
+            if template_path.is_file()
+            else tokenizer_config.get("chat_template")
+        )
+        if template_source is None:
+            raise FileNotFoundError(
+                f"No chat_template.jinja or tokenizer_config.json chat_template in {path}"
+            )
+        if not isinstance(template_source, str):
+            raise ValueError("Local counting requires one text chat template; select a template explicitly")
+        self._template = environment.from_string(template_source)
+        self._provenance_renderer = ChatTemplateProvenanceRenderer(
+            environment,
+            template_source,
+            preserve_macro=preserve_macro,
+        )
+        self._tokenizer = Tokenizer.from_file(str(tokenizer_path))
         self._template_globals = {
-            key: value
+            key: value if isinstance(value, str) else value["content"]
             for key, value in tokenizer_config.items()
-            if key.endswith("_token") and isinstance(value, str)
+            if key.endswith("_token")
+            and (isinstance(value, str) or isinstance(value, dict) and isinstance(value.get("content"), str))
         }
 
-    def prepare_tools(self, tools, *, api_style):
-        if self.model_type == "minimax_m2" and api_style == "sglang":
-            return prepare_minimax_tools(tools)
+    def prepare_tools(self, tools: Sequence[JsonDict], *, api_style: str | None) -> list[JsonDict] | None:
+        if api_style == "sglang":
+            return prepare_chat_template_tools(tools)
         return list(tools) or None
 
-    def message_layout(self, messages, tools, *, enable_thinking, api_style):
-        # MiroThinker uses Qwen3 architecture IDs in its local model config.
-        if self.model_type not in {"qwen3", "qwen3_moe", "minimax_m2"}:
-            raise ValueError(
-                "token reposition requires the MiroThinker (Qwen3/Qwen3-MoE) or MiniMax M2 architecture"
-            )
+    def template_values(
+        self,
+        enable_thinking: bool | None,
+        reasoning_effort: str | None,
+        chat_template_kwargs: JsonDict | None,
+    ) -> JsonDict:
+        values = dict(self._template_globals)
+        if enable_thinking is not None:
+            values["enable_thinking"] = enable_thinking
+        if reasoning_effort is not None:
+            values["reasoning_effort"] = reasoning_effort
+        values.update(chat_template_kwargs or {})
+        if set(values) & {"messages", "tools", "documents", "add_generation_prompt"}:
+            raise ValueError("Template kwargs cannot replace request messages, tools, or generation mode")
+        return values
+
+    def message_layout(
+        self,
+        messages: Sequence[JsonDict],
+        tools: Sequence[JsonDict],
+        *,
+        enable_thinking: bool | None,
+        api_style: str | None,
+        reasoning_effort: str | None = None,
+        chat_template_kwargs: JsonDict | None = None,
+    ) -> ChatMessageTokenLayout:
         prepared = prepare_chat_template_messages(messages, api_style=api_style)
         assert self._provenance_renderer is not None
         assert self._template is not None
         assert self._tokenizer is not None
         template_tools = self.prepare_tools(tools, api_style=api_style)
+        values = self.template_values(enable_thinking, reasoning_effort, chat_template_kwargs)
         provenance = self._provenance_renderer.render(
             self._tokenizer,
             prepared,
             tools=template_tools,
             add_generation_prompt=True,
-            enable_thinking=enable_thinking,
-            template_globals=self._template_globals,
+            enable_thinking=None,
+            template_globals=values,
         )
         rendered = self._template.render(
             messages=prepared,
             tools=template_tools,
             documents=None,
             add_generation_prompt=True,
-            enable_thinking=enable_thinking,
-            **self._template_globals,
+            **values,
         )
         if provenance.rendered_text != rendered:
             raise RuntimeError("chat-template provenance changed the canonical prompt")
@@ -476,7 +525,16 @@ class JinjaEncoder:
             tuple(wire_message_token_counts),
         )
 
-    def count(self, messages, tools, *, enable_thinking, api_style):
+    def count(
+        self,
+        messages: Sequence[JsonDict],
+        tools: Sequence[JsonDict],
+        *,
+        enable_thinking: bool | None,
+        api_style: str | None,
+        reasoning_effort: str | None = None,
+        chat_template_kwargs: JsonDict | None = None,
+    ) -> int:
         template_messages = prepare_chat_template_messages(messages, api_style=api_style)
         template_tools = self.prepare_tools(tools, api_style=api_style)
         rendered = self._template.render(
@@ -484,7 +542,6 @@ class JinjaEncoder:
             tools=template_tools,
             documents=None,
             add_generation_prompt=True,
-            enable_thinking=enable_thinking,
-            **self._template_globals,
+            **self.template_values(enable_thinking, reasoning_effort, chat_template_kwargs),
         )
         return len(self._tokenizer.encode(rendered, add_special_tokens=False).ids)

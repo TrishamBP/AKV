@@ -5,7 +5,7 @@ from __future__ import annotations
 import copy
 import json
 import time
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from contextlib import nullcontext
 from math import isfinite
 
@@ -22,13 +22,13 @@ from .capture import CallCapture
 from .transport import backend_error, chat_url, encode_body, iter_sse_data, stream_http
 
 
-def positive_timeout(value):
+def positive_timeout(value: float) -> float:
     if type(value) not in (int, float) or not isfinite(value) or value <= 0:
         raise ValueError("timeout must be a positive finite number")
     return value
 
 
-def stream_string(value):
+def stream_string(value: object) -> str:
     if not isinstance(value, str):
         raise BackendError("SSE text and tool-call fragments must be strings")
     return value
@@ -74,7 +74,7 @@ def send_chat_request(
                 close()
 
 
-def collect(chunks, *, record=None):
+def collect(chunks: Iterable[bytes], *, record: CallCapture | None = None) -> JsonDict:
     data = {
         "content": [],
         "reasoning_content": [],
@@ -154,7 +154,7 @@ def collect(chunks, *, record=None):
     raise BackendError("chat backend SSE stream ended before [DONE]")
 
 
-def make_result(data, started):
+def make_result(data: JsonDict, started: float) -> GenerationResult:
     calls = tuple(
         ToolCall(call["id"] or f"call_{index}", call["name"], call["arguments"])
         for index, call in sorted(data["calls"].items())

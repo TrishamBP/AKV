@@ -31,13 +31,63 @@ from __future__ import annotations
 
 import itertools
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
 from functools import lru_cache
-from typing import Any
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 from akv.agent.messages import history_tool_calls
-from akv.agent.types import ChatMessageTokenLayout
+from akv.agent.types import ChatMessageTokenLayout, JsonDict
+
+if TYPE_CHECKING:
+    from openai_harmony import Conversation, HarmonyEncoding, Message
+
+
+class HarmonyTokenCounter:
+    """Expose native Harmony rendering through the common counter contract."""
+
+    def __init__(self, model_path: str | Path) -> None:
+        self.model_path = Path(model_path)
+
+    def encoder(
+        self,
+        reasoning_effort: str | None,
+        enable_thinking: bool | None,
+        chat_template_kwargs: JsonDict | None,
+    ) -> tuple[HarmonyEncoder, bool | None]:
+        options = chat_template_kwargs or {}
+        effort = options.get("reasoning_effort", reasoning_effort)
+        thinking = options.get("enable_thinking", enable_thinking)
+        return HarmonyEncoder(effort), thinking
+
+    def message_layout(
+        self,
+        messages: Sequence[JsonDict],
+        tools: Sequence[JsonDict],
+        *,
+        enable_thinking: bool | None,
+        reasoning_effort: str | None,
+        api_style: str | None,
+        chat_template_kwargs: JsonDict | None = None,
+    ) -> ChatMessageTokenLayout:
+        encoder, thinking = self.encoder(reasoning_effort, enable_thinking, chat_template_kwargs)
+        return encoder.message_layout(messages, tools, enable_thinking=thinking, logical_messages=messages)
+
+    def count(
+        self,
+        messages: Sequence[JsonDict],
+        tools: Sequence[JsonDict],
+        *,
+        enable_thinking: bool | None,
+        reasoning_effort: str | None,
+        api_style: str | None,
+        chat_template_kwargs: JsonDict | None = None,
+    ) -> int:
+        encoder, thinking = self.encoder(reasoning_effort, enable_thinking, chat_template_kwargs)
+        ids, _, _ = encoder.render_tokens(messages, tools, enable_thinking=thinking)
+        return len(ids)
 
 
 @dataclass(frozen=True)
@@ -49,21 +99,34 @@ class HarmonyComponentOwnership:
 
 @dataclass(frozen=True)
 class HarmonyPrompt:
-    conversation: Any
-    components: list[Any]
+    conversation: Conversation
+    components: list[Message]
     ownership: list[HarmonyComponentOwnership]
     thinking_components: dict[int, tuple[int, str]]
     has_function_tools: bool
 
 
 class HarmonyEncoder:
-    def __init__(self, reasoning_effort=None):
+    def __init__(self, reasoning_effort: str | None = None) -> None:
         self._reasoning_effort = reasoning_effort
 
-    def render_tokens(self, messages, tools=None, *, enable_thinking=None):
+    def render_tokens(
+        self,
+        messages: Sequence[JsonDict],
+        tools: Sequence[JsonDict] | None = None,
+        *,
+        enable_thinking: bool | None = None,
+    ) -> tuple[list[int], list[int], int]:
         return self.render_harmony_message_drop(messages, tools=tools, enable_thinking=enable_thinking)
 
-    def message_layout(self, messages, tools, *, enable_thinking, logical_messages):
+    def message_layout(
+        self,
+        messages: Sequence[JsonDict],
+        tools: Sequence[JsonDict],
+        *,
+        enable_thinking: bool | None,
+        logical_messages: Sequence[JsonDict],
+    ) -> ChatMessageTokenLayout:
         """Validate agent history and map Harmony tokens to original message IDs."""
         dialogue = 0
         while dialogue < len(messages) and messages[dialogue].get("role") in {"system", "developer"}:
@@ -117,17 +180,17 @@ class HarmonyEncoder:
 
     @staticmethod
     @lru_cache(maxsize=1)
-    def get_harmony_encoding():
+    def get_harmony_encoding() -> HarmonyEncoding:
         from openai_harmony import HarmonyEncodingName, load_harmony_encoding
 
         return load_harmony_encoding(HarmonyEncodingName.HARMONY_GPT_OSS)
 
     def build_harmony_prompt(
         self,
-        messages: list[dict[str, Any]],
+        messages: Sequence[JsonDict],
         *,
         enable_thinking: bool | None,
-        tools: list[dict[str, Any]] | None,
+        tools: Sequence[JsonDict] | None,
     ) -> HarmonyPrompt:
         from openai_harmony import (
             Author,
@@ -335,10 +398,10 @@ class HarmonyEncoder:
 
     def render_harmony_message_drop(
         self,
-        messages: list[dict[str, Any]],
+        messages: Sequence[JsonDict],
         *,
         enable_thinking: bool | None,
-        tools: list[dict[str, Any]] | None,
+        tools: Sequence[JsonDict] | None,
     ) -> tuple[list[int], list[int], int]:
         """Render once and recover message owners from Harmony protocol boundaries."""
 

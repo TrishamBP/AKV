@@ -1,9 +1,10 @@
 """Cumulative position compaction at completed logical-call boundaries."""
 
 import itertools
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
-from .types import ChatTokenCounter, PolicyRequest
+from .types import ChatMessageTokenLayout, ChatTokenCounter, JsonDict, PolicyRequest
 
 
 @dataclass(frozen=True)
@@ -13,7 +14,7 @@ class RepositionConfig:
     reposition_trigger_tokens: int | None = None
     token_counter: ChatTokenCounter | None = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         for name in ("reposition_after_call", "reposition_interval_calls", "reposition_trigger_tokens"):
             value = getattr(self, name)
             if value is not None and (type(value) is not int or value <= 0):
@@ -27,22 +28,45 @@ class RepositionConfig:
                 raise ValueError("Token reposition requires a token counter")
 
 
-def message_tokens(layout, message_id):
+def message_tokens(layout: ChatMessageTokenLayout, message_id: int) -> int:
     if layout.message_token_counts is not None:
         return layout.message_token_counts[message_id]
     return layout.message_ends[message_id] - (layout.message_ends[message_id - 1] if message_id else 0)
 
 
+def token_layout(
+    request: PolicyRequest,
+    token_counter: ChatTokenCounter,
+    end: int,
+    layouts: dict[int, ChatMessageTokenLayout],
+) -> ChatMessageTokenLayout:
+    """Render the historical request prefix; cache only within one decision."""
+    if end not in layouts:
+        rendering = (
+            {"chat_template_kwargs": request.chat_template_kwargs} if request.chat_template_kwargs else {}
+        )
+        layouts[end] = token_counter.message_layout(
+            request.messages[: end + 1],
+            request.tools,
+            enable_thinking=request.enable_thinking,
+            reasoning_effort=request.reasoning_effort,
+            api_style=request.api_style,
+            **rendering,
+        )
+    return layouts[end]
+
+
 def reposition_events(
     request: PolicyRequest,
-    schedule,
+    schedule: Mapping[int, Sequence[int]],
     *,
-    after_call=None,
-    interval_calls=None,
-    trigger_tokens=None,
-    token_counter=None,
-    prompt_end_message_ids_by_boundary=None,
-):
+    after_call: int | None = None,
+    interval_calls: int | None = None,
+    trigger_tokens: int | None = None,
+    token_counter: ChatTokenCounter | None = None,
+    prompt_end_message_ids_by_boundary: Mapping[int, int] | None = None,
+    layouts: dict[int, ChatMessageTokenLayout] | None = None,
+) -> tuple[tuple[int, ...] | None, JsonDict]:
     if after_call is None and trigger_tokens is None:
         return None, {}
     boundaries = tuple(request.completed_call_message_ids)
@@ -83,18 +107,13 @@ def reposition_events(
             for message in request.messages[end + 1 :]
         ):
             raise ValueError("Token reposition requires the current generation boundary")
-    layout = token_counter.message_layout(
-        request.messages,
-        request.tools,
-        enable_thinking=request.enable_thinking,
-        reasoning_effort=request.reasoning_effort,
-        api_style=request.api_style,
-    )
+    layouts = {} if layouts is None else layouts
     compacted_ids, events, audits = set(), [], []
     for call, boundary in enumerate(boundaries, 1):
-        compacted = sum(message_tokens(layout, i) for i in compacted_ids)
         end = controller_ids.get(boundary, boundary)
-        position = layout.message_ends[end] + layout.generation_tokens - compacted
+        layout = token_layout(request, token_counter, end, layouts)
+        compacted = sum(message_tokens(layout, i) for i in compacted_ids)
+        position = layout.prompt_tokens - compacted
         dropped = {i for trigger, ids in schedule.items() if trigger <= boundary for i in ids}
         dropped_tokens = sum(message_tokens(layout, i) for i in dropped)
         if position > trigger_tokens and dropped_tokens > compacted:
@@ -109,6 +128,7 @@ def reposition_events(
                 }
             )
             compacted_ids = dropped
+    layout = token_layout(request, token_counter, len(request.messages) - 1, layouts)
     return tuple(events) or None, {
         "reposition_trigger_tokens": trigger_tokens,
         "reposition_token_metric": "post_reposition_position_length_including_generation_header",

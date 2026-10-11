@@ -10,16 +10,18 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Mapping
 
-from akv.agent.types import BackendError, ContextLengthError
+from akv.agent.types import BackendError, ContextLengthError, JsonDict
 
 
-def encode_body(payload: dict) -> bytes:
+def encode_body(payload: JsonDict) -> bytes:
     return json.dumps(payload, ensure_ascii=False, allow_nan=False).encode("utf-8", errors="backslashreplace")
 
 
-def backend_error(message: str, *, response_body=None, http_status=None) -> BackendError:
+def backend_error(
+    message: str, *, response_body: bytes | None = None, http_status: int | None = None
+) -> BackendError:
     limits = (
         "longer than the model's context length",
         "exceeds the model's maximum context length",
@@ -59,7 +61,9 @@ def loopback_url(url: str) -> bool:
         return False
 
 
-def stream_http(url: str, payload: dict, *, headers: dict, timeout: float) -> Iterator[bytes]:
+def stream_http(
+    url: str, payload: JsonDict, *, headers: Mapping[str, str], timeout: float
+) -> Iterator[bytes]:
     """Stream HTTP bytes, bypassing environment proxies only for loopback."""
     request = urllib.request.Request(
         url,
@@ -89,7 +93,7 @@ def iter_sse_data(chunks: Iterable[bytes]) -> Iterator[str]:
     buffer = ""
     data = []
 
-    def line_value(line):
+    def line_value(line: str) -> str | None:
         if not line:
             if data:
                 value = "\n".join(data)

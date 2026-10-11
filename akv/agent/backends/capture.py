@@ -7,19 +7,22 @@ import json
 import os
 import time
 import uuid
+from collections.abc import Iterable, Iterator, Mapping
 from contextlib import ExitStack
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
+from types import TracebackType
+from typing import Self
 
-from akv.agent.types import BackendTraceContext
+from akv.agent.types import BackendTraceContext, JsonDict
 
 
-def utc_now():
+def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def atomic_write(path: Path, data: bytes):
+def atomic_write(path: Path, data: bytes) -> None:
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     try:
         with os.fdopen(os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as stream:
@@ -31,7 +34,7 @@ def atomic_write(path: Path, data: bytes):
         temporary.unlink(missing_ok=True)
 
 
-def redacted_headers(headers):
+def redacted_headers(headers: Mapping[str, str]) -> dict[str, str]:
     sensitive = {"authorization", "proxy-authorization", "api-key", "x-api-key", "openai-api-key"}
     return {name: "<redacted>" if name.lower() in sensitive else value for name, value in headers.items()}
 
@@ -43,7 +46,15 @@ class CallCapture:
     writes as a run failure. A partial response remains available after failure.
     """
 
-    def __init__(self, context: BackendTraceContext, *, url, payload, headers, timeout):
+    def __init__(
+        self,
+        context: BackendTraceContext,
+        *,
+        url: str,
+        payload: bytes,
+        headers: Mapping[str, str],
+        timeout: float,
+    ) -> None:
         self.path, self.trace = Path(context.artifact_dir), context.metadata
         self.url, self.payload, self.headers, self.timeout = url, payload, headers, timeout
         self.result = None
@@ -51,7 +62,7 @@ class CallCapture:
         self.response_bytes = self.chunks = self.events = self.outputs = 0
         self.first_chunk = self.first_event = self.first_output = self.last_output = self.done = None
 
-    def __enter__(self):
+    def __enter__(self) -> Self:
         json.dumps(self.trace, allow_nan=False)
         self.path.mkdir(parents=True, mode=0o700, exist_ok=False)
         atomic_write(self.path / "request.json.gz", gzip.compress(self.payload, mtime=0))
@@ -70,19 +81,19 @@ class CallCapture:
         self.started_at = utc_now()
         return self
 
-    def write_bytes(self, data):
+    def write_bytes(self, data: bytes) -> None:
         if data and self.first_chunk is None:
             self.first_chunk = (time.monotonic(), utc_now())
         self.response.write(data)
         self.response_bytes += len(data)
         self.chunks += 1
 
-    def capture_stream(self, chunks):
+    def capture_stream(self, chunks: Iterable[bytes]) -> Iterator[bytes]:
         for chunk in chunks:
             self.write_bytes(chunk)
             yield chunk
 
-    def record_event(self, text, parsed):
+    def record_event(self, text: str, parsed: JsonDict | None) -> None:
         stamp = (time.monotonic(), utc_now())
         self.first_event = self.first_event or stamp
         choices = (parsed or {}).get("choices") or []
@@ -113,7 +124,9 @@ class CallCapture:
         self.events += 1
         self.outputs += bool(fields)
 
-    def __exit__(self, kind, error, traceback):
+    def __exit__(
+        self, kind: type[BaseException] | None, error: BaseException | None, traceback: TracebackType | None
+    ) -> None:
         try:
             body = getattr(error, "response_body", None)
             if body and not self.response_bytes:
@@ -150,9 +163,6 @@ class CallCapture:
         if self.result is not None:
             result = asdict(self.result)
             result["message"]["tool_calls"] = [call.as_openai() for call in self.result.message.tool_calls]
-            result["message"]["recovered_tool_calls"] = [
-                call.as_recovered() for call in self.result.message.recovered_tool_calls
-            ]
         call = {
             "schema_version": 2,
             "trace": self.trace,

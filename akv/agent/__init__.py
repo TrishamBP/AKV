@@ -1,22 +1,19 @@
-"""Drop/reposition policies and stateless adapters for existing agent harnesses."""
+"""Cache policies with caller-owned state for existing agent harnesses."""
 
-from .adapter import adapt_request, apply_context
-from .policy import AKVPolicy
+from .policy import CachePolicy
 from .types import (
-    ContextDecision,
+    CacheOperation,
+    CacheState,
     GeneratedMessage,
     GenerationResult,
     JsonDict,
-    PolicyRequest,
     ToolCall,
 )
 
 __all__ = [
-    "AKVPolicy",
-    "ContextDecision",
-    "PolicyRequest",
-    "adapt_request",
-    "apply_context",
+    "CachePolicy",
+    "CacheState",
+    "CacheOperation",
     "GeneratedMessage",
     "GenerationResult",
     "JsonDict",

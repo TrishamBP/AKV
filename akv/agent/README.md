@@ -1,76 +1,161 @@
-# akv.agent
+# AKV Agent
 
-akv.agent provides drop/reposition policies and stateless request adaptation for agent workflows. It derives cumulative cache operations from the full conversation history while leaving history management, tool execution, and the agent loop to the caller.
+AKV Agent is the algorithm component of AKV for managing the KV cache of LLM agents. Its configurable policies decide which messages to drop from the cache and when to reposition retained tokens.
 
 ## Environment Setup
 
-Use Python 3.12. From the AKV repository root, install the agent and system together:
+Create a uv environment and install in editable mode:
 
 ```bash
-uv venv --python 3.12
-source .venv/bin/activate
-uv pip install -e .
+uv venv --python 3.12 akvagent
+source akvagent/bin/activate
+uv pip install -e ./akv/agent
 ```
 
-This includes the tokenization dependencies. The policy core itself uses only the standard library.
+Optional: install token counting dependencies for token-based policies:
+
+```bash
+uv pip install -e "./akv/agent[tokenization]"
+```
 
 ## Quick Start
 
-Prepare a Chat Completions JSON request, then apply the policy before sending it:
+Use your running server's URL and model name:
 
 ```python
-from akv.agent import AKVPolicy, adapt_request, apply_context
-
-policy = AKVPolicy(
-    keep_tool_responses=12,
-    reposition_after_call=4,
-    reposition_interval_calls=4,
-)
-
-
-def prepare_request(payload):
-    policy_input = adapt_request(payload, api_style="sglang")
-    decision = policy.decide(policy_input)
-    return apply_context(payload, decision)
-```
-
-`payload` contains the full message history, tools, and generation options. The default `kv_drop` mode preserves the request's messages and adds cumulative `drop_message` and `reposition` instructions. `apply_context` returns a copy without modifying the caller's history.
-
-Build each request from the full history without existing cache instructions. Message indices are **zero-based**; send the prepared request without inserting, merging, or reordering messages afterward.
-
-Use your own HTTP client or the optional native HTTP/SSE backend:
-
-```python
+from akv.agent import CachePolicy, CacheState
 from akv.agent.backends import send_chat_request
 
-result = send_chat_request("http://127.0.0.1:30000/v1", prepare_request(payload))
+payload = {
+    "model": "gpt-oss-120b",
+    "messages": [{"role": "user", "content": "Say hello."}],
+    "stream": True,
+    "max_completion_tokens": 2048,
+}
+policy = CachePolicy(
+    drop_target_responses=1,
+    reposition_after_call=2,
+    reposition_interval_calls=1,
+)
+state = CacheState()
+
+prepared, next_state = policy.process(payload, state=state, api_style="sglang")
+result = send_chat_request("http://127.0.0.1:30000/v1", prepared)
+state = next_state
+print(result.message.content)
 ```
 
-The backend collects streamed text and tool calls, requires `[DONE]`, and supports request capture through `trace_context`. Interrupted responses retain partial captures, and missing usage remains unknown. The caller appends the response, executes tools, and adds their results before the next request.
+For a complete agent loop with tool calls and cache operations, run [the demo](../../examples/demo.py):
+
+```bash
+python examples/demo.py \
+  --base-url http://127.0.0.1:30000/v1 \
+  --model gpt-oss-120b \
+  --output local/demo-01
+```
 
 ## Policy Options
 
-| Option | Usage |
-| --- | --- |
-| `keep_tool_responses` | Number of recent individual tool responses to retain. |
-| `mode` | `kv_drop` adds cache instructions; `text_drop` removes selected messages from the request copy. |
-| `rolling_drop_target` | Select `tool`, `assistant`, or `both` for rolling deletion. |
-| `reposition_after_call` | First complete tool batch to trigger repositioning. |
-| `reposition_interval_calls` | Repeat interval for repositioning. |
-| `reposition_trigger_tokens` | Trigger repositioning by token position length instead of batch count. |
-| `drop_after_call`, `drop_interval_calls` | Schedule drops by complete tool batches. |
-| `drop_trigger_tokens`, `drop_trigger_responses` | Trigger drops by visible prompt length or tool-response count. |
-| `drop_target_tokens` | Target visible prompt length after a triggered drop. |
-| `token_counter` | Counter used by token-based policies. |
+`CachePolicy` controls KV Drop and Reposition through rules or agent-selected actions.
 
-Without an explicit drop trigger, the policy uses a rolling window. Drop trigger modes are mutually exclusive. Repositioning requires `kv_drop`; token thresholds and targets require a matching counter. See [AKVPolicy](policy.py) for defaults and configuration rules.
+### What to drop
+
+Set `rolling_drop_target` to choose which messages to remove from the KV cache:
+
+| Value | Messages to drop |
+| --- | --- |
+| `"tool"` (default) | Tool results outside the retention window. |
+| `"assistant"` | Assistant messages associated with expired tool batches. |
+| `"both"` | Both tool results and their associated assistant messages. |
+
+### 1. Managed By Harness
+
+Configure Drop and Reposition independently. A batch is complete when all results from one assistant tool-calling message have returned.
+
+#### Drop
+
+For `tool` Drop, configure when to check and how much to retain.
+
+**When to drop**
+
+| Parameter | Behavior |
+| --- | --- |
+| `drop_after_call=N` | First check after batch N. |
+| `drop_interval_calls=M` | Repeat the check every M batches; requires `drop_after_call`. Omit for a single check. |
+| `drop_trigger_tokens=T` | Check when the visible prompt exceeds T tokens; requires `token_counter`. |
+
+Choose either the batch parameters or the token trigger.
+
+**How much to retain**
+
+| Parameter | Retention target |
+| --- | --- |
+| `drop_target_responses=K` | Keep the latest K tool results. |
+| `drop_target_tokens=U` | Drop oldest tool results toward a prompt length of U tokens; requires `token_counter`. |
+
+Choose one target. With a token trigger and token target, U must be less than T.
+
+A **rolling window** is a batch configuration that checks from the first batch, then every batch. For example, retain the latest 12 tool results:
+
+```python
+policy = CachePolicy(
+    rolling_drop_target="tool",
+    drop_after_call=1,
+    drop_interval_calls=1,
+    drop_target_responses=12,
+)
+```
+
+Nothing is dropped until the number of retained tool results exceeds 12. Each check drops the excess oldest results.
+
+#### Reposition
+
+| Parameter | Behavior |
+| --- | --- |
+| `reposition_after_call=N` | First reposition after batch N. |
+| `reposition_interval_calls=M` | Repeat every M batches; requires `reposition_after_call`. Omit for a single operation. |
+| `reposition_trigger_tokens=T` | Reposition when the token position length exceeds T and dropped content leaves gaps; requires `token_counter`. |
+
+Choose either the batch parameters or the token trigger. Set `reposition_interval_calls=1` to reposition after every batch from N onward.
+
+Override rules for one request with `options`, reusing the same state:
+
+```python
+prepared, next_state = policy.process(
+    payload, state=state, options={"drop_target_responses": 2}, api_style="sglang"
+)
+```
+
+### 2. Managed By Agent
+
+The agent can choose message IDs to drop and whether to reposition:
+
+```python
+prepared, next_state = CachePolicy().process(
+    payload,
+    state=state,
+    actions={"drop_message_ids": [1, 2], "reposition": True},
+    api_style="sglang",
+)
+```
+
+IDs are zero-based indices in `payload["messages"]`. `actions` replaces automatic rules for that request; use it without `options`.
 
 ## Token Counting
 
-The root workspace installation already includes the tokenization dependencies.
+New models need a tokenizer and chat template matching the server:
 
-[LocalChatTemplateTokenCounter](tokenization.py) loads a local model's tokenization resources. Adapters are provided for GPT-OSS, MiniMax, and MiroThinker. The tokenizer, template, and rendering settings must match the actual request. Custom counters implement the `ChatTokenCounter` contract in [types.py](types.py).
+- For Jinja models, provide `tokenizer.json`, `tokenizer_config.json`, and `chat_template.jinja` (or a template in `tokenizer_config.json`).
+- For custom counting, follow [models/](models/) and register the model's `model_type` in [models/__init__.py](models/__init__.py).
+
+Load the model directory and pass the counter as `token_counter` in your policy:
+
+```python
+from akv.agent.tokenization import ModelTokenCounter
+
+counter = ModelTokenCounter("/path/to/model")
+```
 
 ## License
 
-AKV is licensed under [Apache-2.0](../../LICENSE). Individual files retain their applicable license notices.
+AKV is licensed under [Apache-2.0](../../LICENSE).
