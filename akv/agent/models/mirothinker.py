@@ -8,7 +8,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from akvalgo.types import JsonDict, ToolCall
+from akv.agent.types import JsonDict, ToolCall
 
 MIROTHINKER_MCP_PROTOCOL = "mirothinker_mcp"
 MIROTHINKER_MCP_PROTOCOL_VERSION = "mirothinker-mcp-v6"

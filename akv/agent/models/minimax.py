@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Iterable
 
-from akvalgo.types import JsonDict
+from akv.agent.types import JsonDict
 
 
 def reject_json_constant(value: str) -> None:

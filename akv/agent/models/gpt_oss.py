@@ -36,8 +36,8 @@ from datetime import date
 from functools import lru_cache
 from typing import Any
 
-from akvalgo.messages import history_tool_calls
-from akvalgo.types import ChatMessageTokenLayout
+from akv.agent.messages import history_tool_calls
+from akv.agent.types import ChatMessageTokenLayout
 
 
 @dataclass(frozen=True)

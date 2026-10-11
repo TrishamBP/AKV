@@ -1,12 +1,15 @@
-akv/
 .venv/
-akvsgl/akvsgl/.sglang/
-akvsgl/akvsgl/.sglang.*
+.venv-*/
+akv/system/.sglang/
+akv/system/.sglang.*
 __pycache__/
 *.py[cod]
 *.egg-info/
 dist/
-/akvsgl/akvsgl/build/*/dist/
 /build/
-
+/akv/agent/build/
+/akv/system/build/lib/
+/akv/system/build/bdist.*/
+# Preserve ignored artifacts left by older source layouts.
 /akvsgl/build/
+/akvsgl/*.egg-info/

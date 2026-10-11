@@ -1,24 +1,24 @@
-# akvalgo
+# akv.agent
 
-akvalgo provides drop/reposition policies and stateless request adaptation for agent workflows. It derives cumulative cache operations from the full conversation history while leaving history management, tool execution, and the agent loop to the caller.
+akv.agent provides drop/reposition policies and stateless request adaptation for agent workflows. It derives cumulative cache operations from the full conversation history while leaving history management, tool execution, and the agent loop to the caller.
 
 ## Environment Setup
 
-The package uses Python 3.12 and has no runtime dependencies beyond the standard library. With uv installed, run these commands from the repository root:
+Use Python 3.12. From the AKV repository root, install the agent and system together:
 
 ```bash
-UV_PROJECT_ENVIRONMENT="$PWD/akvalgo/.venv-algo" uv sync --project akvalgo --no-dev
-akvalgo/.venv-algo/bin/python -c 'import akvalgo; print(akvalgo.__file__)'
+uv sync
+source .venv/bin/activate
 ```
 
-Keep the algorithm environment separate from the server environment. For server installation and configuration, see [akvsgl](../README.md).
+This includes the tokenization dependencies. The policy core itself uses only the standard library.
 
 ## Quick Start
 
 Prepare a Chat Completions JSON request, then apply the policy before sending it:
 
 ```python
-from akvalgo import AKVPolicy, adapt_request, apply_context
+from akv.agent import AKVPolicy, adapt_request, apply_context
 
 policy = AKVPolicy(
     keep_tool_responses=12,
@@ -40,7 +40,7 @@ Build each request from the full history without existing cache instructions. Me
 Use your own HTTP client or the optional native HTTP/SSE backend:
 
 ```python
-from akvalgo.backends import send_chat_request
+from akv.agent.backends import send_chat_request
 
 result = send_chat_request("http://127.0.0.1:30000/v1", prepare_request(payload))
 ```
@@ -66,14 +66,10 @@ Without an explicit drop trigger, the policy uses a rolling window. Drop trigger
 
 ## Token Counting
 
-Install the optional tokenization dependencies when using token-based policies:
-
-```bash
-UV_PROJECT_ENVIRONMENT="$PWD/akvalgo/.venv-algo" uv sync --project akvalgo --no-dev --extra tokenization
-```
+The root workspace installation already includes the tokenization dependencies.
 
 [LocalChatTemplateTokenCounter](tokenization.py) loads a local model's tokenization resources. Adapters are provided for GPT-OSS, MiniMax, and MiroThinker. The tokenizer, template, and rendering settings must match the actual request. Custom counters implement the `ChatTokenCounter` contract in [types.py](types.py).
 
 ## License
 
-AKV is licensed under [Apache-2.0](../LICENSE). Individual files retain their applicable license notices.
+AKV is licensed under [Apache-2.0](../../LICENSE). Individual files retain their applicable license notices.

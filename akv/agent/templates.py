@@ -18,7 +18,7 @@ from jinja2 import Environment, nodes
 from jinja2.visitor import NodeTransformer
 from tokenizers import Tokenizer
 
-from akvalgo.types import ChatMessageTokenLayout, JsonDict
+from akv.agent.types import ChatMessageTokenLayout, JsonDict
 
 from .models.minimax import prepare_minimax_tools
 

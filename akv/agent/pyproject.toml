@@ -3,7 +3,7 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "akvalgo"
+name = "akv-agent"
 version = "0.2.0"
 description = "Drop and reposition policies with a native AKV System client"
 readme = "README.md"
@@ -22,6 +22,6 @@ tokenization = [
 dev = ["pytest>=8.4", "pytest-cov>=6", "debugpy>=1.8", "ruff>=0.12"]
 
 [tool.setuptools]
-packages = ["akvalgo", "akvalgo.backends", "akvalgo.models"]
-package-dir = { akvalgo = "." }
+packages = ["akv.agent", "akv.agent.backends", "akv.agent.models"]
+package-dir = { "akv.agent" = "." }
 include-package-data = false

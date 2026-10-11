@@ -3,7 +3,7 @@
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from akvalgo.types import RECOVERED_TOOL_CALLS_KEY, JsonDict
+from akv.agent.types import RECOVERED_TOOL_CALLS_KEY, JsonDict
 
 CANONICAL_ROLES = ("system", "developer", "user", "assistant", "tool")
 

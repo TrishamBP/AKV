@@ -1,0 +1,10 @@
+include uv.lock
+recursive-include examples *.py
+recursive-include akv/agent *.py *.toml *.md
+include akv/system/__init__.py akv/system/launch_server.py akv/system/_build.py
+include akv/system/pyproject.toml akv/system/LICENSE akv/system/sglang.patch
+recursive-include akv/system/sglang *.py
+include akv/system/build/sglang/pyproject.toml akv/system/build/sglang/backend.py
+include akv/system/build/gateway/pyproject.toml akv/system/build/gateway/backend.py
+prune akv/agent/build
+prune akv/agent/dist

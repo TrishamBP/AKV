@@ -14,7 +14,7 @@ import tomllib
 import urllib.request
 
 ASSETS = Path(__file__).resolve().parent
-ROOT = ASSETS.parent
+ROOT = ASSETS
 SOURCE = ASSETS / ".sglang"
 CONFIG = tomllib.loads((ROOT / "pyproject.toml").read_text())["tool"]["akv"]
 VERSIONS = {"sglang": "0.5.20+akv", "gateway": "0.3.2+akv"}
@@ -131,7 +131,7 @@ def prepare():
             if _git(staging, "write-tree") != CONFIG["base-tree"]:
                 raise RuntimeError("Upstream archive does not match the pinned official source tree")
             commit = _git(
-                staging, "-c", "user.name=akvsgl", "-c", "user.email=build@localhost",
+                staging, "-c", "user.name=akv", "-c", "user.email=build@localhost",
                 "-c", "commit.gpgsign=false", "commit-tree", CONFIG["base-tree"],
                 "-m", f"Official SGLang source archive: {CONFIG['base']}",
             )
@@ -215,15 +215,17 @@ def _sdist(kind, directory, config_settings=None):
         entry = ASSETS / "build" / kind
         shutil.copy2(entry / "backend.py", stage / "backend.py")
         project = (entry / "pyproject.toml").read_text()
-        # Standalone archives carry the same immutable preparation configuration.
-        project += "\n[tool.akv]\n" + "".join(f'{key} = "{value}"\n' for key, value in CONFIG.items())
         (stage / "pyproject.toml").write_text(project)
-        assets = stage / "akvsgl"
-        assets.mkdir()
-        for name in ("_build.py", "__init__.py", "sglang.patch"):
+        assets = stage / "akv" / "system"
+        assets.mkdir(parents=True)
+        for name in ("_build.py", "__init__.py", "sglang.patch", "pyproject.toml", "LICENSE"):
             shutil.copy2(ASSETS / name, assets / name)
         shutil.copytree(ASSETS / "sglang", assets / "sglang", ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
-        shutil.copytree(ASSETS / "build", assets / "build", ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        for build_kind in ("sglang", "gateway"):
+            target = assets / "build" / build_kind
+            target.mkdir(parents=True)
+            for name in ("pyproject.toml", "backend.py"):
+                shutil.copy2(ASSETS / "build" / build_kind / name, target / name)
         shutil.copy2(ROOT / "LICENSE", stage / "LICENSE")
         metadata = _delegate(kind, "prepare_metadata_for_build_wheel", tmp, config_settings)
         shutil.copy2(Path(tmp) / metadata / "METADATA", stage / "PKG-INFO")

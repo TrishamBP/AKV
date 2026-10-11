@@ -12,7 +12,7 @@ import urllib.parse
 import urllib.request
 from collections.abc import Iterable, Iterator
 
-from akvalgo.types import BackendError, ContextLengthError
+from akv.agent.types import BackendError, ContextLengthError
 
 
 def encode_body(payload: dict) -> bytes:

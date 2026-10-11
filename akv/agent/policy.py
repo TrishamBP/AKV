@@ -4,7 +4,7 @@ import itertools
 from copy import deepcopy
 from dataclasses import dataclass
 
-from akvalgo.messages import atomic_message_units, history_tool_calls
+from akv.agent.messages import atomic_message_units, history_tool_calls
 
 from .reposition import RepositionConfig, message_tokens, reposition_events
 from .types import ChatTokenCounter, ContextDecision, PolicyRequest

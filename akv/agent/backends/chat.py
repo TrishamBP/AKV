@@ -9,7 +9,7 @@ from collections.abc import Mapping
 from contextlib import nullcontext
 from math import isfinite
 
-from akvalgo.types import (
+from akv.agent.types import (
     BackendError,
     BackendTraceContext,
     GeneratedMessage,

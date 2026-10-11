@@ -12,7 +12,7 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 
-from akvalgo.types import BackendTraceContext
+from akv.agent.types import BackendTraceContext
 
 
 def utc_now():
