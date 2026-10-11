@@ -1,4 +1,3 @@
-include uv.lock
 recursive-include examples *.py
 recursive-include akv/agent *.py *.toml *.md
 include akv/system/__init__.py akv/system/launch_server.py akv/system/_build.py

@@ -15,12 +15,9 @@ dependencies = ["akv-agent[tokenization]==0.2.0", "akv-system==0.1.0"]
 default-groups = []
 environments = ["sys_platform == 'linux'"]
 
-[tool.uv.workspace]
-members = ["akv/agent", "akv/system"]
-
 [tool.uv.sources]
-akv-agent = { workspace = true }
-akv-system = { workspace = true }
+akv-agent = { path = "akv/agent", editable = true }
+akv-system = { path = "akv/system", editable = true }
 
 [tool.setuptools]
 packages = []

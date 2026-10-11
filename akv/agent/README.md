@@ -7,8 +7,9 @@ akv.agent provides drop/reposition policies and stateless request adaptation for
 Use Python 3.12. From the AKV repository root, install the agent and system together:
 
 ```bash
-uv sync
+uv venv --python 3.12
 source .venv/bin/activate
+uv pip install -e .
 ```
 
 This includes the tokenization dependencies. The policy core itself uses only the standard library.

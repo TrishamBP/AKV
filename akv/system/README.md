@@ -12,11 +12,11 @@ sh install-rust.sh -y
 source "$HOME/.cargo/env"
 ```
 
-2. Create a uv environment and install in editable mode:
+2. From the AKV repository root, create a uv environment and install the agent and system in editable mode:
 
 ```bash
-uv venv --python 3.12 akvsgl
-source akvsgl/bin/activate
+uv venv --python 3.12
+source .venv/bin/activate
 uv pip install -e .
 ```
 

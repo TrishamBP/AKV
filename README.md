@@ -28,12 +28,12 @@ source "$HOME/.cargo/env"
 ```bash
 git clone https://github.com/thu-nics/AKV.git
 cd AKV
-uv venv --python 3.12 --prompt akv .venv
-uv sync
+uv venv --python 3.12
 source .venv/bin/activate
+uv pip install -e .
 ```
 
-The environment is displayed as `akv` and stored in `.venv` to avoid conflicting with the `akv/` source directory. See the [system README](akv/system/README.md) and the [agent README](akv/agent/README.md) for dependencies.
+The environment is stored in `.venv` to avoid conflicting with the `akv/` source directory. See the [system README](akv/system/README.md) and the [agent README](akv/agent/README.md) for dependencies.
 
 ## Quick Start
 
