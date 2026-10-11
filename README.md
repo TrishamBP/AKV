@@ -1,4 +1,12 @@
-# AKV
+<div align="center">
+  <img src="resource/logo.gif" alt="AKV animated memory bot" width="160" />
+  <h1>AKV</h1>
+  <h3>Cache Engineering for Agents</h3>
+
+  <p>
+    <a href="https://fuvty.github.io/thinking_yard_project_page/projects/akv/">🌐 <b>Project Page</b></a>
+  </p>
+</div>
 
 AKV brings KV cache engineering to LLM agents. It combines agent-side policies for deciding what to drop and when to compact positions with an SGLang-based inference system that executes those operations while reusing compatible KV cache.
 
