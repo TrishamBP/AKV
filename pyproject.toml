@@ -23,5 +23,5 @@ akv-agent = { workspace = true }
 akv-system = { workspace = true }
 
 [tool.setuptools]
-packages = ["akv"]
+packages = []
 include-package-data = false
