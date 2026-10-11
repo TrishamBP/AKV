@@ -10,7 +10,7 @@
 
 AKV brings KV cache engineering to LLM agents. It combines agent-side policies for deciding what to drop and when to compact positions with an SGLang-based inference system that executes those operations while reusing compatible KV cache.
 
-- **`akv.agent`** derives Drop/Reposition instructions from the full conversation history and integrates with existing agent workflows.
+- **`akv.agent`** is the algorithm component that decides which messages to drop from the KV cache and when to reposition retained tokens.
 - **`akv.system`** executes cache operations through SGLang's OpenAI-compatible Chat Completions API.
 
 ## Environment Setup
@@ -77,25 +77,25 @@ Message indices are **zero-based**. After processing message 3, the server drops
 
 3. Apply an AKV policy
 
-Prepare a Chat Completions request, then apply the policy before sending it:
+Apply the policy to a Chat Completions `payload` containing the full history, tools, and generation options, without existing cache instructions:
 
 ```python
-from akv.agent import AKVPolicy, adapt_request, apply_context
+from akv.agent import CachePolicy, CacheState
 
-policy = AKVPolicy(
-    keep_tool_responses=12,
+policy = CachePolicy(
+    rolling_drop_target="tool",
+    drop_after_call=1,
+    drop_interval_calls=1,
+    drop_target_responses=12,
     reposition_after_call=4,
     reposition_interval_calls=4,
 )
+state = CacheState()
 
-
-def prepare_request(payload):
-    policy_input = adapt_request(payload, api_style="sglang")
-    decision = policy.decide(policy_input)
-    return apply_context(payload, decision)
+prepared, next_state = policy.process(payload, state=state, api_style="sglang")
 ```
 
-`payload` contains the full message history, tools, and generation options, without existing cache instructions. `apply_context` returns a copy with cumulative `drop_message` and `reposition` instructions. Send the prepared request without changing the message order; the caller manages history and tool execution. See the [agent README](akv/agent/README.md) for client integration.
+Send `prepared` as the request body. After a successful response, reuse `next_state` with the full updated history for the next request. See the [agent README](akv/agent/README.md) and [complete agent demo](examples/demo.py) for usage examples.
 
 ## Usage
 
@@ -113,21 +113,64 @@ Context requests report `cached_tokens`, `drop_skipped_tokens`, and `repos_token
 
 ### Agent: policy configuration
 
-`AKVPolicy` uses a rolling window by default. It counts individual tool responses for retention and complete tool batches for call-based triggers.
+`CachePolicy` supports rules or agent-selected actions. `CachePolicy()` applies no automatic operations.
 
-| Option | Usage |
-| --- | --- |
-| `keep_tool_responses` | Number of recent individual tool responses to retain. |
-| `rolling_drop_target` | Select `tool`, `assistant`, or `both` for rolling deletion. |
-| `reposition_after_call` | First complete tool batch to trigger repositioning. |
-| `reposition_interval_calls` | Repeat interval for repositioning. |
-| `reposition_trigger_tokens` | Trigger repositioning by token position length instead of batch count. |
-| `drop_after_call`, `drop_interval_calls` | Schedule drops by complete tool batches. |
-| `drop_trigger_tokens`, `drop_trigger_responses` | Trigger drops by visible prompt length or tool-response count. |
-| `drop_target_tokens` | Target visible prompt length after a triggered drop. |
-| `token_counter` | Counter used by token-based policies. |
+<table>
+  <thead>
+    <tr><th>Configuration</th><th>Parameter</th><th>Usage</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>What to drop</td>
+      <td><code>rolling_drop_target</code></td>
+      <td>Select <code>tool</code>, <code>assistant</code>, or <code>both</code> for deletion based on the retention window.</td>
+    </tr>
+    <tr>
+      <td rowspan="3">When to drop tools</td>
+      <td><code>drop_after_call=N</code></td>
+      <td>First check after complete tool batch N.</td>
+    </tr>
+    <tr>
+      <td><code>drop_interval_calls=M</code></td>
+      <td>Repeat every M batches; requires <code>drop_after_call</code>. Omit for a single check.</td>
+    </tr>
+    <tr>
+      <td><code>drop_trigger_tokens=T</code></td>
+      <td>Check when the visible prompt exceeds T tokens.</td>
+    </tr>
+    <tr>
+      <td rowspan="2">How much to retain</td>
+      <td><code>drop_target_responses=K</code></td>
+      <td>Window size in individual tool results.</td>
+    </tr>
+    <tr>
+      <td><code>drop_target_tokens=U</code></td>
+      <td>Drop oldest tool results toward a visible prompt length of U tokens.</td>
+    </tr>
+    <tr>
+      <td rowspan="3">When to reposition</td>
+      <td><code>reposition_after_call=N</code></td>
+      <td>First reposition after complete tool batch N.</td>
+    </tr>
+    <tr>
+      <td><code>reposition_interval_calls=M</code></td>
+      <td>Repeat every M batches; requires <code>reposition_after_call</code>. Omit for a single operation.</td>
+    </tr>
+    <tr>
+      <td><code>reposition_trigger_tokens=T</code></td>
+      <td>Reposition when token position length exceeds T and dropped content leaves gaps.</td>
+    </tr>
+    <tr>
+      <td>Token counting</td>
+      <td><code>token_counter</code></td>
+      <td>Required for token thresholds and token retention targets.</td>
+    </tr>
+  </tbody>
+</table>
 
-Drop trigger modes are mutually exclusive. Repositioning requires `kv_drop`; token thresholds and targets require a matching counter. See the [agent README](akv/agent/README.md) for configuration rules and token counting.
+For each operation, choose either batch or token triggers. Choose one retention target; a token target must be below the token Drop trigger when both are set. The rolling example above checks after every batch and drops only when more than 12 tool results are retained.
+
+Pass `options` to `process` to override rules for one request, or `actions` to supply agent-selected message IDs and a reposition decision. See the [agent README](akv/agent/README.md#policy-options) for examples and configuration details.
 
 ## Supported Models
 
