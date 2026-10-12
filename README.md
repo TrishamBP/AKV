@@ -98,9 +98,9 @@ We can read the example as: **process message 3 $\to$ drop messages 1 and 2 $\to
 
 Hints:
 
-1. Do not remove messages 1 and 2 from the request yourself.
-2. `drop_message` and `reposition` are optional and independent. If at one message, both two operations are triggered, the system always drop the message **first**, then reposition.
-3. Repositioning does not change message indices. Keep the full history and its original numbering; the server applies the operations.
+- Do not remove messages 1 and 2 from the request yourself.
+- `drop_message` and `reposition` are optional and independent. If at one message, both two operations are triggered, the system always drop the message **first**, then reposition.
+- Repositioning does not change message indices. Keep the full history and its original numbering; the server applies the operations.
 
 </details>
 
