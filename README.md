@@ -73,7 +73,37 @@ response.raise_for_status()
 print(response.json())
 ```
 
-Message indices are **zero-based**. After processing message 3, the server drops the KV of messages 1 and 2 and compacts the retained positions before generating the response.
+Here, `messages` contains the conversation history. `drop_message` selects which messages to drop the model's active context and where; `reposition` compacts the positions of the remaining tokens.
+
+<details>
+<summary>Explanation to the request</summary>
+
+In this example, we number the indices of messages (which is from 0), including system, user, assistant, and tool messages.
+In the example above:
+
+| Index | Role | Content |
+| --- | --- | --- |
+| 0 | system | You are a helpful assistant. |
+| 1 | user | The capital of France is Paris. |
+| 2 | assistant | I have read the note. |
+| 3 | user | What is the capital of France? |
+
+| Field | Format | Example | Meaning |
+| --- | --- | --- | --- |
+| `messages` | OpenAI-Compatible messages | The four messages above | The full conversation history, including messages selected for dropping. |
+| `drop_message` | `{"<trigger_message_index>" : [<message_to_drop_index>, ...]}` | `{"3": [1, 2]}` | After processing message 3, drop the KV cache of messages 1 and 2 from the active context. |
+| `reposition` | `[<trigger_message_index>, ...]` | `[3]` | After processing message 3, compact the remaining token positions to remove gaps. |
+
+We can read the example as: **process message 3 $\to$ drop messages 1 and 2 $\to$ compact token positions $\to$ generate the reply.**. 
+
+Hints:
+
+1. Do not remove messages 1 and 2 from the request yourself.
+2. `drop_message` and `reposition` are optional and independent. If at one message, both two operations are triggered, the system always drop the message **first**, then reposition.
+3. Repositioning does not change message indices. Keep the full history and its original numbering; the server applies the operations.
+
+</details>
+
 
 3. Apply an AKV policy
 
