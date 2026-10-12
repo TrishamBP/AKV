@@ -1,16 +1,27 @@
-"""A minimal HTTP/SSE agent loop with fixed or changing cache rules.
+"""A minimal HTTP/SSE agent loop driven by three policy components.
 
-The default CLI case keeps one tool result for the first two completed batches,
-then keeps two. Use --case fixed for the original keep-one rule.
+Configure trigger, selector, and reposition in main. The default composition
+uses drop_context to select old tool results and repositions every third tool batch.
 """
 
 import argparse
 import json
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
 from akv.agent import CachePolicy, CacheState
 from akv.agent.backends import send_chat_request
-from akv.agent.types import BackendTraceContext, ToolCall
+from akv.agent.policies import (
+    BatchReposition,
+    CacheTool,
+    DropContextTool,
+    ToolSelection,
+    ToolTrigger,
+)
+from akv.agent.types import BackendTraceContext, JsonDict, ToolCall
+
+ToolHandler = Callable[[str, Sequence[JsonDict]], JsonDict]
+ResultFormatter = Callable[[int, str], str]
 
 RECORDS = {
     "parcel-104": {"note": "Parcel handed to the regional carrier.", "next_record": "route-B7"},
@@ -35,18 +46,49 @@ TOOLS = (
 )
 
 
-def execute_tool(call: ToolCall) -> str:
+def read_record(arguments: str, messages: Sequence[JsonDict]) -> JsonDict:
+    """Business tool; this handler does not need the supplied call-time history."""
+    args = json.loads(arguments)
+    if not isinstance(args, dict) or set(args) != {"record_id"}:
+        raise ValueError("Expected exactly one argument: record_id")
+    record_id = args["record_id"]
+    if not isinstance(record_id, str) or record_id not in RECORDS:
+        raise ValueError("Unknown record_id")
+    return RECORDS[record_id]
+
+
+def register_tool(
+    schema: JsonDict,
+    handler: ToolHandler,
+    *,
+    tools: list[JsonDict],
+    handlers: dict[str, ToolHandler],
+) -> None:
+    """Example harness registration: pair a model-facing schema with executable code."""
+    name = schema["function"]["name"]
+    if name in handlers:
+        raise ValueError(f"Tool name is already registered: {name}")
+    tools.append(schema)
+    handlers[name] = handler
+
+
+def label_result(message_id: int, content: str) -> str:
+    """Expose a stable ID when the result enters canonical history."""
+    return json.dumps({"message_id": message_id, "result": json.loads(content)})
+
+
+def execute_tool(
+    call: ToolCall,
+    *,
+    handlers: Mapping[str, ToolHandler] | None = None,
+    messages: Sequence[JsonDict] = (),
+) -> str:
     """Tool dispatch belongs to this demo, not to AKV or the model server."""
     try:
-        if call.name != "read_record":
+        handlers = {"read_record": read_record} if handlers is None else handlers
+        if call.name not in handlers:
             raise ValueError(f"Unknown tool: {call.name}")
-        args = json.loads(call.arguments)
-        if not isinstance(args, dict) or set(args) != {"record_id"}:
-            raise ValueError("Expected exactly one argument: record_id")
-        record_id = args["record_id"]
-        if not isinstance(record_id, str) or record_id not in RECORDS:
-            raise ValueError("Unknown record_id")
-        return json.dumps(RECORDS[record_id])
+        return json.dumps(handlers[call.name](call.arguments, messages))
     except (ValueError, TypeError) as error:
         return json.dumps({"error": str(error)})
 
@@ -57,15 +99,29 @@ def run_agent(
     output: Path,
     *,
     model: str = "gpt-oss-120b",
-    max_steps: int = 8,
+    max_steps: int = 12,
     max_tokens: int = 2048,
-    case: str = "switch",
+    cache_tool: CacheTool | None = None,
 ) -> str:
     if max_steps <= 0 or max_tokens <= 0:
         raise ValueError("max_steps and max_tokens must be positive")
-    if case not in {"fixed", "switch"}:
-        raise ValueError("case must be fixed or switch")
+    state = CacheState()
+    tools: list[JsonDict] = []
+    handlers: dict[str, ToolHandler] = {}
+    result_formatters: dict[str, ResultFormatter] = {}
+    # Configure tools once. Descriptions go to the model; handlers stay in the harness.
+    register_tool(TOOLS[0], read_record, tools=tools, handlers=handlers)
+    if cache_tool:
+        register_tool(
+            cache_tool.schema,
+            lambda arguments, messages: cache_tool.execute(arguments, messages=messages, state=state),
+            tools=tools,
+            handlers=handlers,
+        )
+        result_formatters["read_record"] = label_result
     output.mkdir(parents=True, exist_ok=False)
+    payloads = output / "payloads"
+    payloads.mkdir()
     history = [
         {"role": "system", "content": "Use read_record to trace the parcel. Read one record at a time."},
         {
@@ -73,16 +129,25 @@ def run_agent(
             "content": "Start at parcel-104. Follow next_record until null, then report the final delivery location.",
         },
     ]
-    trace = {"case": case, "status": "incomplete", "messages": history, "steps": []}
-    state = CacheState()
-    completed_calls = 0
+    if cache_tool:
+        history[0]["content"] += (
+            " Each record result includes its canonical message_id. Keep the newest record result "
+            "visible until you have read its exact next_record and received the successor result. "
+            f"Then call {cache_tool.name} for older record results that are no longer needed, using "
+            "their message_id values. Never guess a record ID or delete the newest result. "
+            "When next_record is null, report the delivery location immediately without another "
+            "cleanup call. "
+            "A scheduled result takes effect on the next model request."
+        )
+    trace = {"status": "incomplete", "messages": history, "steps": []}
+    completed_batches = 0
     try:
         for step in range(1, max_steps + 1):
             # 1. The harness converts its history/tools to the final chat payload.
             payload = {
                 "model": model,
                 "messages": history,
-                "tools": list(TOOLS),
+                "tools": tools,
                 "tool_choice": "auto",
                 "stream": True,
                 "stream_options": {"include_usage": True},
@@ -92,16 +157,16 @@ def run_agent(
                 "separate_reasoning": True,
             }
             # 2. Apply this request's rules using the cumulative state.
-            options = {"drop_target_responses": 2} if case == "switch" and completed_calls >= 3 else None
-            target = options["drop_target_responses"] if options else policy.drop_target_responses
-            prepared, next_state = policy.process(payload, state=state, options=options, api_style="sglang")
+            prepared, next_state = policy.process(payload, state=state, api_style="sglang")
+            for label, body in (("before", payload), ("after", prepared)):
+                (payloads / f"{step:02d}-{label}.json").write_text(
+                    json.dumps(body, ensure_ascii=False, indent=2) + "\n"
+                )
             state_snapshot = next_state.to_dict()
             new_operations = state_snapshot["operations"][len(state.operations) :]
             event = {
                 "step": step,
-                "completed_tool_batches": completed_calls,
-                "policy_options": options,
-                "drop_target_responses": target,
+                "completed_tool_batches": completed_batches,
                 "canonical_message_ids": list(range(len(history))),
                 "drop_message": prepared.get("drop_message"),
                 "reposition": prepared.get("reposition"),
@@ -110,7 +175,7 @@ def run_agent(
             }
             trace["steps"].append(event)
             print(
-                f"\nStep {step} (completed batches={completed_calls}, keep={target}): "
+                f"\nStep {step} (completed batches={completed_batches}): "
                 f"drop={prepared.get('drop_message')}, reposition={prepared.get('reposition')}",
                 flush=True,
             )
@@ -138,13 +203,17 @@ def run_agent(
                 print(f"Answer: {result.message.content}", flush=True)
                 return result.message.content
             # 4. Execute every call and append every result before the next generation.
+            call_history = history[:-1]
             for call in calls:
-                content = execute_tool(call)
+                content = execute_tool(call, handlers=handlers, messages=call_history)
+                formatter = result_formatters.get(call.name)
+                if formatter is not None:
+                    content = formatter(len(history), content)
                 history.append(
                     {"role": "tool", "tool_call_id": call.id, "name": call.name, "content": content}
                 )
                 print(f"  message {len(history) - 1}: {call.name}({call.arguments}) -> {content}", flush=True)
-            completed_calls += 1
+            completed_batches += 1
         raise RuntimeError("Demo reached max_steps without a final answer")
     except Exception as error:
         trace["error"] = f"{type(error).__name__}: {error}"
@@ -159,16 +228,15 @@ def main() -> None:
     parser.add_argument("--base-url", default="http://127.0.0.1:30000/v1")
     parser.add_argument("--model", default="gpt-oss-120b")
     parser.add_argument("--output", type=Path, default=Path("local/demo-01"))
-    parser.add_argument("--max-steps", type=int, default=8)
+    parser.add_argument("--max-steps", type=int, default=12)
     parser.add_argument("--max-tokens", type=int, default=2048)
-    parser.add_argument(
-        "--case",
-        choices=("fixed", "switch"),
-        default="switch",
-        help="switch: keep 1 for tool batches 1-2, then keep 2; fixed: always keep 1",
-    )
     args = parser.parse_args()
-    policy = CachePolicy(drop_target_responses=1, reposition_after_call=2, reposition_interval_calls=1)
+    cache_tool = DropContextTool()
+    policy = CachePolicy(
+        trigger=ToolTrigger(cache_tool),
+        selector=ToolSelection(cache_tool),
+        reposition=BatchReposition(after=3, every=3),
+    )
     run_agent(
         args.base_url,
         policy,
@@ -176,7 +244,7 @@ def main() -> None:
         model=args.model,
         max_steps=args.max_steps,
         max_tokens=args.max_tokens,
-        case=args.case,
+        cache_tool=cache_tool,
     )
 
 
