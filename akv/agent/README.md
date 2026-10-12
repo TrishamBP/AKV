@@ -1,160 +1,61 @@
 # AKV Agent
 
-AKV Agent is the algorithm component of AKV for managing the KV cache of LLM agents. Its configurable policies decide which messages to drop from the cache and when to reposition retained tokens.
+See the [root README](../../README.md) for the Quick Start, harness integration, and policy design.
 
-## Environment Setup
+## Installation
 
-Create a uv environment and install in editable mode:
+From the repository root, create a separate client environment. The base package uses only the Python standard library and does not include the GPU runtime.
 
 ```bash
-uv venv --python 3.12 akvagent
-source akvagent/bin/activate
+uv venv --python 3.12 .venv-algo
+source .venv-algo/bin/activate
 uv pip install -e ./akv/agent
 ```
 
-Optional: install token counting dependencies for token-based policies:
+Token-based policies additionally require the optional token counting dependencies:
 
 ```bash
 uv pip install -e "./akv/agent[tokenization]"
 ```
 
-## Quick Start
+## Code Structure
 
-Use your running server's URL and model name:
+The main modules are organized into policy composition, shared helpers, and HTTP transport:
 
-```python
-from akv.agent import CachePolicy, CacheState
-from akv.agent.backends import send_chat_request
-
-payload = {
-    "model": "gpt-oss-120b",
-    "messages": [{"role": "user", "content": "Say hello."}],
-    "stream": True,
-    "max_completion_tokens": 2048,
-}
-policy = CachePolicy(
-    drop_target_responses=1,
-    reposition_after_call=2,
-    reposition_interval_calls=1,
-)
-state = CacheState()
-
-prepared, next_state = policy.process(payload, state=state, api_style="sglang")
-result = send_chat_request("http://127.0.0.1:30000/v1", prepared)
-state = next_state
-print(result.message.content)
+```text
+akv/agent/
+├── policy.py                 # CachePolicy.process: compose decisions and prepare requests
+├── types.py                  # Shared request, action, state, and token-layout types
+├── policies/                 # Composable policy components
+│   ├── triggers.py           # When to select messages for deletion
+│   ├── selectors.py          # Which messages to delete
+│   ├── reposition.py         # When to compact retained positions
+│   ├── tools.py              # CacheTool interface and tool implementations
+│   └── utils/                # Request, message, and policy-context helpers
+│       ├── tokenization.py   # ModelTokenCounter entry point
+│       └── models/           # Chat-template rendering and model-specific counters
+└── backends/                 # Native HTTP/SSE transport and request captures
 ```
 
-For a complete agent loop with tool calls and cache operations, run [the demo](../../examples/demo.py):
-
-```bash
-python examples/demo.py \
-  --base-url http://127.0.0.1:30000/v1 \
-  --model gpt-oss-120b \
-  --output local/demo-01
-```
-
-## Policy Options
-
-`CachePolicy` controls KV Drop and Reposition through rules or agent-selected actions.
-
-### What to drop
-
-Set `rolling_drop_target` to choose which messages to remove from the KV cache:
-
-| Value | Messages to drop |
-| --- | --- |
-| `"tool"` (default) | Tool results outside the retention window. |
-| `"assistant"` | Assistant messages associated with expired tool batches. |
-| `"both"` | Both tool results and their associated assistant messages. |
-
-### 1. Managed By Harness
-
-Configure Drop and Reposition independently. A batch is complete when all results from one assistant tool-calling message have returned.
-
-#### Drop
-
-For `tool` Drop, configure when to check and how much to retain.
-
-**When to drop**
-
-| Parameter | Behavior |
-| --- | --- |
-| `drop_after_call=N` | First check after batch N. |
-| `drop_interval_calls=M` | Repeat the check every M batches; requires `drop_after_call`. Omit for a single check. |
-| `drop_trigger_tokens=T` | Check when the visible prompt exceeds T tokens; requires `token_counter`. |
-
-Choose either the batch parameters or the token trigger.
-
-**How much to retain**
-
-| Parameter | Retention target |
-| --- | --- |
-| `drop_target_responses=K` | Keep the latest K tool results. |
-| `drop_target_tokens=U` | Drop oldest tool results toward a prompt length of U tokens; requires `token_counter`. |
-
-Choose one target. With a token trigger and token target, U must be less than T.
-
-A **rolling window** is a batch configuration that checks from the first batch, then every batch. For example, retain the latest 12 tool results:
-
-```python
-policy = CachePolicy(
-    rolling_drop_target="tool",
-    drop_after_call=1,
-    drop_interval_calls=1,
-    drop_target_responses=12,
-)
-```
-
-Nothing is dropped until the number of retained tool results exceeds 12. Each check drops the excess oldest results.
-
-#### Reposition
-
-| Parameter | Behavior |
-| --- | --- |
-| `reposition_after_call=N` | First reposition after batch N. |
-| `reposition_interval_calls=M` | Repeat every M batches; requires `reposition_after_call`. Omit for a single operation. |
-| `reposition_trigger_tokens=T` | Reposition when the token position length exceeds T and dropped content leaves gaps; requires `token_counter`. |
-
-Choose either the batch parameters or the token trigger. Set `reposition_interval_calls=1` to reposition after every batch from N onward.
-
-Override rules for one request with `options`, reusing the same state:
-
-```python
-prepared, next_state = policy.process(
-    payload, state=state, options={"drop_target_responses": 2}, api_style="sglang"
-)
-```
-
-### 2. Managed By Agent
-
-The agent can choose message IDs to drop and whether to reposition:
-
-```python
-prepared, next_state = CachePolicy().process(
-    payload,
-    state=state,
-    actions={"drop_message_ids": [1, 2], "reposition": True},
-    api_style="sglang",
-)
-```
-
-IDs are zero-based indices in `payload["messages"]`. `actions` replaces automatic rules for that request; use it without `options`.
+[CachePolicy.process](policy.py) combines components from [policies/](policies/) and uses [shared helpers](policies/utils/) to prepare the request. The optional [backend](backends/) sends requests independently of policy evaluation. The [demo](../../examples/demo.py) connects these parts in an agent loop.
 
 ## Token Counting
 
-New models need a tokenizer and chat template matching the server:
+Token-based policies count the prompt rendered for the model. For a new model, the counter must match AKV System's tokenizer, chat template, tool formatting, and thinking options.
 
-- For Jinja models, provide `tokenizer.json`, `tokenizer_config.json`, and `chat_template.jinja` (or a template in `tokenizer_config.json`).
-- For custom counting, follow [models/](models/) and register the model's `model_type` in [models/__init__.py](models/__init__.py).
-
-Load the model directory and pass the counter as `token_counter` in your policy:
+Load the model's local assets and pass the counter to token-based components:
 
 ```python
-from akv.agent.tokenization import ModelTokenCounter
+from akv.agent.policies.utils.tokenization import ModelTokenCounter
 
 counter = ModelTokenCounter("/path/to/model")
 ```
+
+To adapt a new model:
+
+1. **Use the model's own chat template.** For Jinja models, supply `tokenizer.json`, the special-token settings in `tokenizer_config.json`, and `chat_template.jinja` (or the `chat_template` string in `tokenizer_config.json`). These must match the assets used by the server. The counter loads this configured template; it does not support replacing it through per-request `chat_template_kwargs["chat_template"]`.
+2. **Adapt rendering where needed.** The [counter loader](policies/utils/models/__init__.py) uses the generic [Jinja counter](policies/utils/models/jinja.py) for model types without a registered counter. If the model needs special rendering or message-boundary handling, add a counter in [models/](policies/utils/models/) and register its `config.json` `model_type` in `MODEL_COUNTERS`. Implement the [ChatTokenCounter](types.py) interface: `message_layout(...)` returns message boundaries, per-message token counts, and the generation-prefix length. See [GPT-OSS](policies/utils/models/gpt_oss.py) and [MiniMax](policies/utils/models/minimax.py) for existing adaptations.
+3. **Verify the rendered prompt and message boundaries.** Compare with the server's prompt rendering and tokenization for plain messages, tool calls/results, and reasoning modes supported by the model. Check the total prompt count, each message's token ownership, and the final generation prefix so token-based selection drops the intended content.
 
 ## License
 

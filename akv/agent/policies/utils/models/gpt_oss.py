@@ -38,7 +38,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from akv.agent.messages import history_tool_calls
+from akv.agent.policies.utils.messages import atomic_message_units
 from akv.agent.types import ChatMessageTokenLayout, JsonDict
 
 if TYPE_CHECKING:
@@ -51,17 +51,6 @@ class HarmonyTokenCounter:
     def __init__(self, model_path: str | Path) -> None:
         self.model_path = Path(model_path)
 
-    def encoder(
-        self,
-        reasoning_effort: str | None,
-        enable_thinking: bool | None,
-        chat_template_kwargs: JsonDict | None,
-    ) -> tuple[HarmonyEncoder, bool | None]:
-        options = chat_template_kwargs or {}
-        effort = options.get("reasoning_effort", reasoning_effort)
-        thinking = options.get("enable_thinking", enable_thinking)
-        return HarmonyEncoder(effort), thinking
-
     def message_layout(
         self,
         messages: Sequence[JsonDict],
@@ -72,22 +61,12 @@ class HarmonyTokenCounter:
         api_style: str | None,
         chat_template_kwargs: JsonDict | None = None,
     ) -> ChatMessageTokenLayout:
-        encoder, thinking = self.encoder(reasoning_effort, enable_thinking, chat_template_kwargs)
-        return encoder.message_layout(messages, tools, enable_thinking=thinking, logical_messages=messages)
-
-    def count(
-        self,
-        messages: Sequence[JsonDict],
-        tools: Sequence[JsonDict],
-        *,
-        enable_thinking: bool | None,
-        reasoning_effort: str | None,
-        api_style: str | None,
-        chat_template_kwargs: JsonDict | None = None,
-    ) -> int:
-        encoder, thinking = self.encoder(reasoning_effort, enable_thinking, chat_template_kwargs)
-        ids, _, _ = encoder.render_tokens(messages, tools, enable_thinking=thinking)
-        return len(ids)
+        options = chat_template_kwargs or {}
+        if options.get("chat_template") is not None:
+            raise ValueError("GPT-OSS uses native Harmony; chat_template overrides are not supported")
+        encoder = HarmonyEncoder(options.get("reasoning_effort", reasoning_effort))
+        thinking = options.get("enable_thinking", enable_thinking)
+        return encoder.message_layout(messages, tools, enable_thinking=thinking)
 
 
 @dataclass(frozen=True)
@@ -102,22 +81,11 @@ class HarmonyPrompt:
     conversation: Conversation
     components: list[Message]
     ownership: list[HarmonyComponentOwnership]
-    thinking_components: dict[int, tuple[int, str]]
-    has_function_tools: bool
 
 
 class HarmonyEncoder:
     def __init__(self, reasoning_effort: str | None = None) -> None:
         self._reasoning_effort = reasoning_effort
-
-    def render_tokens(
-        self,
-        messages: Sequence[JsonDict],
-        tools: Sequence[JsonDict] | None = None,
-        *,
-        enable_thinking: bool | None = None,
-    ) -> tuple[list[int], list[int], int]:
-        return self.render_harmony_message_drop(messages, tools=tools, enable_thinking=enable_thinking)
 
     def message_layout(
         self,
@@ -125,7 +93,6 @@ class HarmonyEncoder:
         tools: Sequence[JsonDict],
         *,
         enable_thinking: bool | None,
-        logical_messages: Sequence[JsonDict],
     ) -> ChatMessageTokenLayout:
         """Validate agent history and map Harmony tokens to original message IDs."""
         dialogue = 0
@@ -133,35 +100,9 @@ class HarmonyEncoder:
             dialogue += 1
         if dialogue == len(messages) or messages[dialogue].get("role") != "user":
             raise ValueError("token reposition requires a user task after the instruction prefix")
-        pending = set()
-        for message, logical_message in zip(messages[dialogue:], logical_messages[dialogue:]):
-            role = message.get("role")
-            if role == "tool":
-                identifier = message.get("tool_call_id")
-                if identifier not in pending:
-                    raise ValueError("token reposition found an unmatched tool response")
-                pending.remove(identifier)
-            else:
-                if pending or role not in {"user", "assistant"}:
-                    raise ValueError(
-                        "token reposition requires complete batches and prefix-only instructions"
-                    )
-                if role == "assistant":
-                    calls = history_tool_calls(logical_message)
-                    if not calls:
-                        reasoning = message.get("reasoning") or message.get("reasoning_content")
-                        if not message.get("content") and isinstance(reasoning, str) and reasoning:
-                            # GAIA keeps length-limited analysis in history and
-                            # requests another generation without a tool batch.
-                            continue
-                    identifiers = [call.get("id") for call in calls]
-                    if any(not isinstance(item, str) or not item for item in identifiers) or len(
-                        set(identifiers)
-                    ) != len(identifiers):
-                        raise ValueError("token reposition requires assistant tool calls with unique IDs")
-                    pending.update(identifiers)
-        if pending:
-            raise ValueError("token reposition requires complete tool-result batches")
+        atomic_message_units(messages)
+        if any(message["role"] not in {"user", "assistant", "tool"} for message in messages[dialogue:]):
+            raise ValueError("Harmony token layout requires prefix-only instructions")
         _ids, owners, _ = self.render_tokens(messages, tools, enable_thinking=enable_thinking)
         ends = [0] * len(messages)
         counts = [0] * len(messages)
@@ -226,7 +167,6 @@ class HarmonyEncoder:
             )
         ]
         ownership = [HarmonyComponentOwnership(owner=-1)]
-        thinking_components: dict[int, tuple[int, str]] = {}
 
         instruction_sources = tuple(
             (raw_message_id, content)
@@ -292,13 +232,11 @@ class HarmonyEncoder:
                 if not isinstance(reasoning, str):
                     reasoning = reasoning_content
                 if isinstance(reasoning, str) and reasoning:
-                    component_id = len(harmony_messages)
                     harmony_messages.append(
                         HarmonyMessage.from_role_and_content(Role.ASSISTANT, reasoning).with_channel(
                             "analysis"
                         )
                     )
-                    thinking_components[component_id] = (raw_message_id, reasoning)
                     ownership.append(
                         HarmonyComponentOwnership(
                             owner=raw_message_id,
@@ -349,8 +287,6 @@ class HarmonyEncoder:
             conversation=Conversation.from_messages(harmony_messages),
             components=harmony_messages,
             ownership=ownership,
-            thinking_components=thinking_components,
-            has_function_tools=bool(descriptions),
         )
         # Completed turns no longer contribute analysis to the next prompt.
         return self.drop_harmony_analysis_before_last_final(prompt)
@@ -382,26 +318,19 @@ class HarmonyEncoder:
         if len(keep_ids) == len(prompt.components):
             return prompt
 
-        remap = {old_id: new_id for new_id, old_id in enumerate(keep_ids)}
         components = [prompt.components[component_id] for component_id in keep_ids]
         return HarmonyPrompt(
             conversation=Conversation.from_messages(components),
             components=components,
             ownership=[prompt.ownership[component_id] for component_id in keep_ids],
-            thinking_components={
-                remap[component_id]: source
-                for component_id, source in prompt.thinking_components.items()
-                if component_id in remap
-            },
-            has_function_tools=prompt.has_function_tools,
         )
 
-    def render_harmony_message_drop(
+    def render_tokens(
         self,
         messages: Sequence[JsonDict],
+        tools: Sequence[JsonDict] | None = None,
         *,
-        enable_thinking: bool | None,
-        tools: Sequence[JsonDict] | None,
+        enable_thinking: bool | None = None,
     ) -> tuple[list[int], list[int], int]:
         """Render once and recover message owners from Harmony protocol boundaries."""
 

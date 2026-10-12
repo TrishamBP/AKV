@@ -463,6 +463,10 @@ class JinjaTokenCounter:
         if reasoning_effort is not None:
             values["reasoning_effort"] = reasoning_effort
         values.update(chat_template_kwargs or {})
+        if values.get("chat_template") is not None:
+            raise ValueError(
+                "Local token counting uses the model's template; chat_template overrides are not supported"
+            )
         if set(values) & {"messages", "tools", "documents", "add_generation_prompt"}:
             raise ValueError("Template kwargs cannot replace request messages, tools, or generation mode")
         return values
@@ -478,9 +482,6 @@ class JinjaTokenCounter:
         chat_template_kwargs: JsonDict | None = None,
     ) -> ChatMessageTokenLayout:
         prepared = prepare_chat_template_messages(messages, api_style=api_style)
-        assert self._provenance_renderer is not None
-        assert self._template is not None
-        assert self._tokenizer is not None
         template_tools = self.prepare_tools(tools, api_style=api_style)
         values = self.template_values(enable_thinking, reasoning_effort, chat_template_kwargs)
         provenance = self._provenance_renderer.render(
@@ -524,24 +525,3 @@ class JinjaTokenCounter:
             len(generation_positions),
             tuple(wire_message_token_counts),
         )
-
-    def count(
-        self,
-        messages: Sequence[JsonDict],
-        tools: Sequence[JsonDict],
-        *,
-        enable_thinking: bool | None,
-        api_style: str | None,
-        reasoning_effort: str | None = None,
-        chat_template_kwargs: JsonDict | None = None,
-    ) -> int:
-        template_messages = prepare_chat_template_messages(messages, api_style=api_style)
-        template_tools = self.prepare_tools(tools, api_style=api_style)
-        rendered = self._template.render(
-            messages=template_messages,
-            tools=template_tools,
-            documents=None,
-            add_generation_prompt=True,
-            **self.template_values(enable_thinking, reasoning_effort, chat_template_kwargs),
-        )
-        return len(self._tokenizer.encode(rendered, add_special_tokens=False).ids)

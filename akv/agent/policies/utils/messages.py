@@ -1,50 +1,40 @@
 """Canonical roles and complete atomic units shared by context policies."""
 
-from collections.abc import Mapping, Sequence
-from typing import Any
+from collections.abc import Sequence
 
 from akv.agent.types import JsonDict
 
 CANONICAL_ROLES = ("system", "developer", "user", "assistant", "tool")
 
 
-def history_tool_calls(message: Mapping[str, Any]) -> list[JsonDict]:
-    """Read structured tool calls from a Chat Completions message."""
-    return list(message.get("tool_calls") or ())
-
-
-def canonical_role(message: JsonDict) -> str:
-    role = message.get("role")
-    if role not in CANONICAL_ROLES:
+def atomic_message_units(messages: Sequence[JsonDict]) -> tuple[tuple[int, ...], ...]:
+    """Validate history once and group each assistant with its complete tool results."""
+    if any(message.get("role") not in CANONICAL_ROLES for message in messages):
         raise ValueError("history contains an unknown message role")
-    return role
-
-
-def atomic_message_units(messages: Sequence[JsonDict], start: int) -> tuple[tuple[int, ...], ...]:
     units: list[tuple[int, ...]] = []
-    index = start
+    index = 0
     while index < len(messages):
         message = messages[index]
-        role = canonical_role(message)
+        role = message["role"]
         if role == "tool":
             raise ValueError(f"history contains orphan tool message at {index}")
-        tool_calls = history_tool_calls(message)
+        tool_calls = message.get("tool_calls") or ()
         if role != "assistant" or not tool_calls:
             units.append((index,))
             index += 1
             continue
         expected = {
-            str(call.get("id"))
+            call["id"]
             for call in tool_calls
-            if isinstance(call, dict) and call.get("id") is not None
+            if isinstance(call, dict) and isinstance(call.get("id"), str) and call["id"]
         }
         if len(expected) != len(tool_calls):
-            raise ValueError("assistant tool_calls must have unique IDs")
+            raise ValueError("assistant tool_calls must have unique nonempty string IDs")
         grouped = [index]
         seen: list[str] = []
         index += 1
-        while index < len(messages) and canonical_role(messages[index]) == "tool":
-            tool_id = str(messages[index].get("tool_call_id"))
+        while index < len(messages) and messages[index]["role"] == "tool":
+            tool_id = messages[index].get("tool_call_id")
             if tool_id not in expected:
                 raise ValueError(f"tool result {index} does not match the preceding tool calls")
             grouped.append(index)

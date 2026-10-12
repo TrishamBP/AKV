@@ -1,7 +1,9 @@
 """Cache policies with caller-owned state for existing agent harnesses."""
 
-from .policy import CachePolicy
+from .policies.utils.context import PolicyContext
+from .policy import CachePolicy, DropTrigger, MessageSelector, RepositionRule
 from .types import (
+    CacheAction,
     CacheOperation,
     CacheState,
     GeneratedMessage,
@@ -12,6 +14,11 @@ from .types import (
 
 __all__ = [
     "CachePolicy",
+    "PolicyContext",
+    "DropTrigger",
+    "MessageSelector",
+    "RepositionRule",
+    "CacheAction",
     "CacheState",
     "CacheOperation",
     "GeneratedMessage",

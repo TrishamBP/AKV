@@ -22,6 +22,6 @@ tokenization = [
 dev = ["pytest>=8.4", "pytest-cov>=6", "debugpy>=1.8", "ruff>=0.12"]
 
 [tool.setuptools]
-packages = ["akv.agent", "akv.agent.backends", "akv.agent.models"]
+packages = ["akv.agent", "akv.agent.policies", "akv.agent.backends", "akv.agent.policies.utils", "akv.agent.policies.utils.models"]
 package-dir = { "akv.agent" = "." }
 include-package-data = false

@@ -74,18 +74,24 @@ class PolicyRequest:
     reasoning_effort: str | None = None
     api_style: str | None = None
     completed_call_message_ids: Sequence[int] = ()
-    prompt_end_message_ids: Mapping[int, int] = field(default_factory=dict)
+    message_units: tuple[tuple[int, ...], ...] = ()
     chat_template_kwargs: JsonDict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
-class ContextDecision:
-    """A wire-history replacement or cumulative model-side context instructions."""
+class CacheAction:
+    """A policy's new decision, before it is added to cumulative state."""
 
-    drop_message: dict[int, tuple[int, ...]] | None = None
-    metadata: dict[str, Any] = field(default_factory=dict)
-    messages: tuple[JsonDict, ...] | None = None
-    reposition: tuple[int, ...] | None = None
+    drop_message_ids: tuple[int, ...] = ()
+    reposition: bool = False
+
+    def __post_init__(self) -> None:
+        ids = tuple(self.drop_message_ids)
+        if any(type(i) is not int or i < 0 for i in ids):
+            raise ValueError("Cache action requires nonnegative integer message IDs")
+        if type(self.reposition) is not bool:
+            raise ValueError("Cache action reposition must be boolean")
+        object.__setattr__(self, "drop_message_ids", tuple(sorted(set(ids))))
 
 
 @dataclass(frozen=True)
@@ -172,17 +178,6 @@ class ChatMessageTokenLayout:
 
 
 class ChatTokenCounter(Protocol):
-    def count(
-        self,
-        messages: Sequence[JsonDict],
-        tools: Sequence[JsonDict],
-        *,
-        enable_thinking: bool | None,
-        reasoning_effort: str | None,
-        api_style: str | None,
-        chat_template_kwargs: JsonDict | None = None,
-    ) -> int: ...
-
     def message_layout(
         self,
         messages: Sequence[JsonDict],

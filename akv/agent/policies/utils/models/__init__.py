@@ -4,7 +4,7 @@ import json
 from importlib import import_module
 from pathlib import Path
 
-from ..types import ChatTokenCounter
+from ....types import ChatTokenCounter
 
 MODEL_COUNTERS = {
     "gpt_oss": ("gpt_oss", "HarmonyTokenCounter"),
