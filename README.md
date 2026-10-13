@@ -181,16 +181,15 @@ As the demo runs, you can watch the model follow the chain of delivery records, 
 
 ## Integrate with an agent harness
 
-Integrate AKV in two steps:
+Integrating AKV requires only one step: **process the final payload before sending request to the system**. After the harness serializes its history and tools, pass the payload to [CachePolicy.process](akv/agent/policy.py), then send the returned payload to AKV System.
 
-1. **Apply the policy before sending each model request.** Once the harness has serialized its history and tools, pass the final payload to [CachePolicy.process](akv/agent/policy.py). Send the returned payload to AKV System. After a successful request, retain the returned AKV state and pass it to the next `process` call.
-2. **Register a cache tool only for tool-based policies.** Before starting the agent loop, register the schema and `execute` handler of your [CacheTool](akv/agent/policies/tools.py) implementation alongside the harness's existing tools. Label tool results with their zero-based indices in the final serialized history so the model can select them for deletion.
+**Optional: register cache tools.** If your policy uses a [CacheTool](akv/agent/policies/tools.py), register its schema and `execute` handler with the harness before starting the agent loop.
 
 <details>
 <summary>Workflow Diagram</summary>
 
 ```mermaid
-flowchart TB
+flowchart LR
     register["Optional: register cache tool<br/>schema + execute handler"]
     payload["Harness builds payload"]
     policy["AKV policy.process"]
@@ -234,7 +233,7 @@ To customize a policy, supply your own `trigger`, `selector`, or `reposition` fu
 | `context.new_batch` | Whether a new complete tool batch has appeared since the previous processed request. |
 
 
-Treat these inputs as read-only. The three functions have the following contracts:
+The three functions have the following contracts:
 
 | Function | Return value | When it runs |
 | --- | --- | --- |
