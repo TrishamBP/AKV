@@ -190,15 +190,21 @@ Integrating AKV requires only one step: **process the final payload before sendi
 
 ```mermaid
 flowchart LR
-    register["Optional: register cache tool<br/>schema + execute handler"]
-    payload["Harness builds payload"]
-    policy["AKV policy.process"]
-    system["AKV System"]
-    response["Harness handles response<br/>and executes tools"]
+    subgraph agent["Agent"]
+        tools["Optional cache tools<br/>Schema + execute handler"]
+        harness["Harness<br/>History and tool execution"]
+        policy["AKV policy.process"]
 
-    register -.-> payload
-    payload --> policy --> system --> response
-    response -->|Next request| payload
+        tools -. register .-> harness
+        harness -->|Final payload| policy
+    end
+
+    subgraph system["System / Backend"]
+        backend["AKV System<br/>Inference, Drop and Reposition"]
+    end
+
+    policy -->|Prepared request| backend
+    backend -->|Response and tool calls| harness
 ```
 
 </details>
