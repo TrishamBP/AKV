@@ -45,72 +45,15 @@ These examples use GPT-OSS-120B, served as `gpt-oss-120b`.
 ```bash
 python -m akv.system.launch_server \
   --model-path /path/to/gpt-oss-120b \
-  --tp-size 2 \
   --reasoning-parser gpt-oss \
   --tool-call-parser gpt-oss \
+  --tp-size 2 \
   --port 8000
 ```
 
 For additional launch options, see the [system README](akv/system/README.md).
 
-### 2. Send a simple request
-
-```python
-import requests
-
-response = requests.post(
-    "http://localhost:8000/v1/chat/completions",
-    json={
-        "model": "gpt-oss-120b",
-        "messages": [
-            {"role": "system", "content": "You are a helpful assistant."},
-            {"role": "user", "content": "The capital of France is Paris."},
-            {"role": "assistant", "content": "I have read the note."},
-            {"role": "user", "content": "What is the capital of France?"},
-        ],
-        "drop_message": {"3": [1, 2]},
-        "reposition": [3],
-        "temperature": 0,
-        "max_tokens": 2048,
-    },
-    timeout=120,
-)
-response.raise_for_status()
-print(response.json())
-```
-
-Here, `messages` contains the conversation history. `drop_message` selects which messages to drop the model's active context and where; `reposition` compacts the positions of the remaining tokens.
-
-<details>
-<summary>Explanation to the request</summary>
-
-In this example, we number the indices of messages (which is from 0), including system, user, assistant, and tool messages.
-In the example above:
-
-| Index | Role | Content |
-| --- | --- | --- |
-| 0 | system | You are a helpful assistant. |
-| 1 | user | The capital of France is Paris. |
-| 2 | assistant | I have read the note. |
-| 3 | user | What is the capital of France? |
-
-| Field | Format | Example | Meaning |
-| --- | --- | --- | --- |
-| `messages` | OpenAI-Compatible messages | The four messages above | The full conversation history, including messages selected for dropping. |
-| `drop_message` | `{"<trigger_message_index>" : [<message_to_drop_index>, ...]}` | `{"3": [1, 2]}` | After processing message 3, drop the KV cache of messages 1 and 2 from the active context. |
-| `reposition` | `[<trigger_message_index>, ...]` | `[3]` | After processing message 3, compact the remaining token positions to remove gaps. |
-
-We can read the example as: **process message 3 $\to$ drop messages 1 and 2 $\to$ compact token positions $\to$ generate the reply.**
-
-Hints:
-
-- Do not remove messages 1 and 2 from the request yourself.
-- `drop_message` and `reposition` are optional and independent. If at one message, both two operations are triggered, the system always drop the message **first**, then reposition.
-- Repositioning does not change message indices. Keep the full history and its original numbering; the server applies the operations.
-
-</details>
-
-### 3. Apply an AKV policy
+### 2. Apply an AKV policy
 
 This payload contains two completed tool calls, with results at message indices 2 and 4. Apply a policy that keeps the latest batch and triggers Reposition:
 
@@ -159,10 +102,10 @@ policy = CachePolicy(
     selector=KeepBatches(1),
     reposition=BatchReposition(after=2, every=2),
 )
-prepared, state = policy.process(payload, api_style="sglang")
+akv_payload, state = policy.process(payload, api_style="sglang")
 ```
 
-`prepared` preserves the entire original payload and adds:
+Here, `payload` is OpenAI Compatible, and `akv_payload` preserves the entire original payload and adds:
 
 ```json
 {
@@ -171,11 +114,61 @@ prepared, state = policy.process(payload, api_style="sglang")
 }
 ```
 
-Send `prepared` as the request body. After message 4, AKV System drops the earlier result at message 2 and compacts the remaining positions.
+Where `messages` contains the conversation history. `drop_message` selects which messages to drop the model's active context and where; `reposition` compacts the positions of the remaining tokens.
 
-### 4. Putting it all together
+### 3. Send request to system
 
-Run the [complete agent demo](examples/demo.py) with GPT-OSS-120B. Reposition is triggered every three turns, starting with the third turn.
+After applying the policy, you can send `akv_payload` directly to the system as the request body. 
+
+```python
+import requests
+
+response = requests.post(
+    "http://localhost:8000/v1/chat/completions",
+    json=akv_payload,
+    timeout=120,
+)
+response.raise_for_status()
+```
+
+<details>
+<summary>Explanation to the request</summary>
+
+We number the indices of messages (which is from 0), including system, user, assistant, and tool messages.
+In the example above:
+
+| Index | Role | Content |
+| --- | --- | --- |
+| 0 | user | Compare records A and B. |
+| 1 | assistant | "tool_calls": `read_record(A)` |
+| 2 | tool | Record A |
+| 3 | assistant | "tool_calls": `read_record(B)` |
+| 4 | tool | Record B |
+
+| Field | Format | Example | Meaning |
+| --- | --- | --- | --- |
+| `messages` | OpenAI-Compatible messages | The four messages above | The full conversation history, including messages selected for dropping. |
+| `drop_message` | `{"<trigger_message_index>" : [<message_to_drop_index>, ...]}` | `{"4": [2]}` | After processing message 4, drop the KV cache of messages 2  from the active context. |
+| `reposition` | `[<trigger_message_index>, ...]` | `[4]` | After processing message 4, compact the remaining token positions to remove gaps. |
+
+We can read the example as: **process message 4 $\to$ drop messages 2 $\to$ compact token positions $\to$ generate the reply.**
+
+Hints:
+
+- Do not remove messages 2 from the request yourself.
+- `drop_message` and `reposition` are optional and independent. If at one message, both two operations are triggered, the system always drop the message **first**, then reposition.
+- Repositioning does not change message indices. Keep the full history and its original numbering; the server applies the operations.
+
+</details>
+
+
+### Run a tool-calling Agent example
+
+The [demo code](examples/demo.py) works as an agent, asking the model to find a parcel’s final delivery location. 
+
+When the agent works, the model can call `drop_context` to drop `tool_call` that are no longer need. Before the next model request, AKV converts successful drop requests into `drop_message` operations. Reposition is scheduled after every three completed tool-call batches.
+
+Run the demo with:
 
 ```bash
 python examples/demo.py \
@@ -193,6 +186,9 @@ Integrate AKV in two steps:
 1. **Apply the policy before sending each model request.** Once the harness has serialized its history and tools, pass the final payload to [CachePolicy.process](akv/agent/policy.py). Send the returned payload to AKV System. After a successful request, retain the returned AKV state and pass it to the next `process` call.
 2. **Register a cache tool only for tool-based policies.** Before starting the agent loop, register the schema and `execute` handler of your [CacheTool](akv/agent/policies/tools.py) implementation alongside the harness's existing tools. Label tool results with their zero-based indices in the final serialized history so the model can select them for deletion.
 
+<details>
+<summary>Workflow Diagram</summary>
+
 ```mermaid
 flowchart TB
     register["Optional: register cache tool<br/>schema + execute handler"]
@@ -206,22 +202,9 @@ flowchart TB
     response -->|Next request| payload
 ```
 
+</details>
 
-## Usage
-
-### System: Drop and Reposition
-
-
-| Request field | Usage |
-| --- | --- |
-| `drop_message` | A clean field to use `message_drop`.Maps a trigger message index to the message indices whose KV should be dropped after that trigger. |
-| `drop_rule` | Selects a structured Drop rule: 1. `message_drop`, which is equivalent to `drop_message`; 2. `thinking_drop`, removes historical assistant reasoning KV while retaining the final answer. |
-| `reposition` | Lists message indices after which to compact retained KV positions. Optional and independent of Drop; indices must be unique and strictly increasing. |
-
-
-Drop alone preserves the surviving positions; Reposition removes the gaps. Thinking Drop acts on historical reasoning and does not disable thinking generation for the new reply. Note that: **do not combine `drop_rule` with `drop_message`**. See the details to use `drop_rule` in [examples](akv/examples).
-
-Context requests report `cached_tokens`, `drop_skipped_tokens`, and `repos_tokens` in `usage.prompt_tokens_details`, including zero values. See the [system README](akv/system/README.md) for rule details and usage accounting.
+## Details
 
 ### Agent: policy composition
 
@@ -290,6 +273,23 @@ policy = CachePolicy(
 ```
 
 With the Quick Start payload, this policy selects message 2 for deletion, keeps message 4 and triggers reposition. It adds `drop_message={"4": [2]}` and `reposition=[4]` to the request.
+
+### System: Drop and Reposition
+
+AKV extends standard chat interface with three optional request fields for drop and reposition. An AKV policy can generate these fields, or you can write them directly, alongside `message` with `JSON` body.
+
+| Field | How to write it | Meaning |
+| --- | --- | --- |
+| `drop_message` | `{"3": [1, 2]}` | After processing message 3, drop the KV cache of messages 1 and 2. The key specifies where; the list specifies what to drop. |
+| `drop_rule` | `{"type": "message_drop", "drop_messages": {"3": [1, 2]}}` | Equivalent to the `drop_message` example above. **Use either form, not both.** |
+| `drop_rule` | `{"type": "thinking_drop"}` | Drop each historical assistant message’s reasoning KV after processing that message, while keeping its final answer. Do not use it with `drop_message` or non-thinking mode. |
+| `reposition` | `[3]` | After processing message 3, compact the remaining token positions to remove gaps. If Drop is also scheduled there, Drop runs first. |
+
+For complete requests, see:
+- [Message Drop](examples/message_drop.py): two equivalent ways to specify which messages to drop, combined with Reposition.
+- [Thinking Drop](examples/thinking_drop.py): remove historical reasoning while retaining final answers, combined with Reposition.
+
+Context requests report `cached_tokens`, `drop_skipped_tokens`, and `repos_tokens` in `usage.prompt_tokens_details`, including zero values. See the [system README](akv/system/README.md) for rule details and usage accounting.
 
 ## Supported Models
 
