@@ -188,24 +188,7 @@ Integrating AKV requires only one step: **process the final payload before sendi
 <details>
 <summary>Workflow Diagram</summary>
 
-```mermaid
-flowchart LR
-    subgraph agent["Agent"]
-        tools["Optional cache tools<br/>Schema + execute handler"]
-        harness["Harness<br/>History and tool execution"]
-        policy["AKV policy.process"]
-
-        tools -. register .-> harness
-        harness -->|Final payload| policy
-    end
-
-    subgraph system["System / Backend"]
-        backend["AKV System<br/>Inference, Drop and Reposition"]
-    end
-
-    policy -->|Prepared request| backend
-    backend -->|Response and tool calls| harness
-```
+![Agent-side request processing and the AKV System backend](resource/agent-system-workflow.svg)
 
 </details>
 
