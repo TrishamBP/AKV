@@ -1,16 +1,17 @@
-![AKV animated memory bot](resource/logo.gif)
+<div align="center">
+  <img src="resource/logo.gif" alt="AKV animated memory bot" width="160" />
+  <h1>AKV</h1>
+  <h3>Cache Engineering for Agents</h3>
 
-# AKV
-
-### Cache Engineering for Agents
-
-[🌐 **Project Page](https://fuvty.github.io/thinking_yard_project_page/projects/akv/)**
+  <p>
+    <a href="https://fuvty.github.io/thinking_yard_project_page/projects/akv/">🌐 <b>Project Page</b></a>
+  </p>
+</div>
 
 AKV brings KV cache engineering to LLM agents. It combines agent-side policies for deciding what to drop and when to compact positions with an SGLang-based inference system that executes those operations while reusing compatible KV cache.
 
 - `akv.agent` is the algorithm component that decides which messages to drop from the KV cache and when to reposition retained tokens.
 - `akv.system` executes cache operations through SGLang's OpenAI-compatible Chat Completions API.
-
 
 
 ## Environment Setup
@@ -44,7 +45,6 @@ These examples use GPT-OSS-120B, served as `gpt-oss-120b`.
 ```bash
 python -m akv.system.launch_server \
   --model-path /path/to/gpt-oss-120b \
-  --served-model-name gpt-oss-120b \
   --tp-size 2 \
   --reasoning-parser gpt-oss \
   --tool-call-parser gpt-oss \
@@ -81,35 +81,34 @@ print(response.json())
 
 Here, `messages` contains the conversation history. `drop_message` selects which messages to drop the model's active context and where; `reposition` compacts the positions of the remaining tokens.
 
-Explanation to the request
+<details>
+<summary>Explanation to the request</summary>
 
 In this example, we number the indices of messages (which is from 0), including system, user, assistant, and tool messages.
 In the example above:
 
+| Index | Role | Content |
+| --- | --- | --- |
+| 0 | system | You are a helpful assistant. |
+| 1 | user | The capital of France is Paris. |
+| 2 | assistant | I have read the note. |
+| 3 | user | What is the capital of France? |
 
-| Index | Role      | Content                         |
-| ----- | --------- | ------------------------------- |
-| 0     | system    | You are a helpful assistant.    |
-| 1     | user      | The capital of France is Paris. |
-| 2     | assistant | I have read the note.           |
-| 3     | user      | What is the capital of France?  |
+| Field | Format | Example | Meaning |
+| --- | --- | --- | --- |
+| `messages` | OpenAI-Compatible messages | The four messages above | The full conversation history, including messages selected for dropping. |
+| `drop_message` | `{"<trigger_message_index>" : [<message_to_drop_index>, ...]}` | `{"3": [1, 2]}` | After processing message 3, drop the KV cache of messages 1 and 2 from the active context. |
+| `reposition` | `[<trigger_message_index>, ...]` | `[3]` | After processing message 3, compact the remaining token positions to remove gaps. |
 
-
-
-| Field          | Format                                                         | Example                 | Meaning                                                                                    |
-| -------------- | -------------------------------------------------------------- | ----------------------- | ------------------------------------------------------------------------------------------ |
-| `messages`     | OpenAI-Compatible messages                                     | The four messages above | The full conversation history, including messages selected for dropping.                   |
-| `drop_message` | `{"<trigger_message_index>" : [<message_to_drop_index>, ...]}` | `{"3": [1, 2]}`         | After processing message 3, drop the KV cache of messages 1 and 2 from the active context. |
-| `reposition`   | `[<trigger_message_index>, ...]`                               | `[3]`                   | After processing message 3, compact the remaining token positions to remove gaps.          |
-
-
-We can read the example as: **process message 3 $\to$ drop messages 1 and 2 $\to$ compact token positions $\to$ generate the reply.**. 
+We can read the example as: **process message 3 $\to$ drop messages 1 and 2 $\to$ compact token positions $\to$ generate the reply.**
 
 Hints:
 
 - Do not remove messages 1 and 2 from the request yourself.
 - `drop_message` and `reposition` are optional and independent. If at one message, both two operations are triggered, the system always drop the message **first**, then reposition.
 - Repositioning does not change message indices. Keep the full history and its original numbering; the server applies the operations.
+
+</details>
 
 ### 3. Apply an AKV policy
 
@@ -122,21 +121,34 @@ from akv.agent.policies import BatchTrigger, KeepBatches, BatchReposition
 payload = {
     "model": "gpt-oss-120b",
     "messages": [
-        {"role": "user", "content": "Compare records A and B."},
         {
-            "role": "assistant", "tool_calls": [{
+            "role": "user", 
+            "content": "Compare records A and B."
+        },
+        {
+            "role": "assistant", 
+            "tool_calls": [{
                 "id": "a", "type": "function",
                 "function": {"name": "read_record", "arguments": '{"record_id":"A"}'},
             }],
         },
-        {"role": "tool", "tool_call_id": "a", "content": "Record A"},
         {
-            "role": "assistant", "tool_calls": [{
+            "role": "tool", 
+            "tool_call_id": "a", 
+            "content": "Record A"
+        },
+        {
+            "role": "assistant", 
+            "tool_calls": [{
                 "id": "b", "type": "function",
                 "function": {"name": "read_record", "arguments": '{"record_id":"B"}'},
             }],
         },
-        {"role": "tool", "tool_call_id": "b", "content": "Record B"},
+        {
+            "role": "tool", 
+            "tool_call_id": "b", 
+            "content": "Record B"
+        },
     ],
     "stream": True,
     "max_completion_tokens": 2048,
@@ -195,24 +207,19 @@ flowchart TB
 ```
 
 
-
-
-
 ## Usage
-
-
 
 ### System: Drop and Reposition
 
 
-| Request field  | Usage                                                                                                                                                                                                                       |
-| -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `drop_message` | Maps a trigger message index to the message indices whose KV should be dropped after that trigger.                                                                                                                          |
-| `drop_rule`    | Selects a structured Drop rule. `message_drop` is equivalent to `drop_message`; `thinking_drop` removes historical assistant reasoning KV while retaining the final answer. Do not combine `drop_rule` with `drop_message`. |
-| `reposition`   | Lists message indices after which to compact retained KV positions. Optional and independent of Drop; indices must be unique and strictly increasing.                                                                       |
+| Request field | Usage |
+| --- | --- |
+| `drop_message` | A clean field to use `message_drop`.Maps a trigger message index to the message indices whose KV should be dropped after that trigger. |
+| `drop_rule` | Selects a structured Drop rule: 1. `message_drop`, which is equivalent to `drop_message`; 2. `thinking_drop`, removes historical assistant reasoning KV while retaining the final answer. |
+| `reposition` | Lists message indices after which to compact retained KV positions. Optional and independent of Drop; indices must be unique and strictly increasing. |
 
 
-Drop alone preserves the surviving positions; Reposition removes the gaps. Thinking Drop acts on historical reasoning and does not disable thinking generation for the new reply.
+Drop alone preserves the surviving positions; Reposition removes the gaps. Thinking Drop acts on historical reasoning and does not disable thinking generation for the new reply. Note that: **do not combine `drop_rule` with `drop_message`**. See the details to use `drop_rule` in [examples](akv/examples).
 
 Context requests report `cached_tokens`, `drop_skipped_tokens`, and `repos_tokens` in `usage.prompt_tokens_details`, including zero values. See the [system README](akv/system/README.md) for rule details and usage accounting.
 
@@ -221,11 +228,11 @@ Context requests report `cached_tokens`, `drop_skipped_tokens`, and `repos_token
 Compose three independent components with `CachePolicy`:
 
 
-| Component    | Responsibility                               | Built-in choices                                                                     |
-| ------------ | -------------------------------------------- | ------------------------------------------------------------------------------------ |
-| `trigger`    | Decide when to select messages for deletion. | [BatchTrigger, TokenTrigger, ToolTrigger](akv/agent/policies/triggers.py)            |
-| `selector`   | Decide which canonical messages to delete.   | [KeepBatches, KeepTokens, ToolSelection](akv/agent/policies/selectors.py)            |
-| `reposition` | Decide when to compact retained positions.   | [BatchReposition, TokenReposition, ToolReposition](akv/agent/policies/reposition.py) |
+| Component | Responsibility | Built-in choices |
+| --- | --- | --- |
+| `trigger` | Decide when to select messages for deletion. | [BatchTrigger, TokenTrigger, ToolTrigger](akv/agent/policies/triggers.py) |
+| `selector` | Decide which canonical messages to delete. | [KeepBatches, KeepTokens, ToolSelection](akv/agent/policies/selectors.py) |
+| `reposition` | Decide when to compact retained positions. | [BatchReposition, TokenReposition, ToolReposition](akv/agent/policies/reposition.py) |
 
 
 The built-in components support three approaches:
@@ -237,20 +244,19 @@ The built-in components support three approaches:
 To customize a policy, supply your own `trigger`, `selector`, or `reposition` function to `CachePolicy`. Each function reads a `PolicyContext` supplied by AKV and returns its decision. The context provides the current request and earlier cache decisions, including:
 
 
-| Context field              | Meaning                                                                                              |
-| -------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `context.request.messages` | The full message list from the payload. Each message's zero-based index is its ID.                   |
-| `context.hidden`           | IDs already selected for deletion by earlier policy decisions. These messages remain in the payload. |
-| `context.new_batch`        | Whether a new complete tool batch has appeared since the previous processed request.                 |
+| Context field | Meaning |
+| --- | --- |
+| `context.request.messages` | The full message list from the payload. Each message's zero-based index is its ID. |
+| `context.hidden` | IDs already selected for deletion by earlier policy decisions. These messages remain in the payload. |
+| `context.new_batch` | Whether a new complete tool batch has appeared since the previous processed request. |
 
 
 Treat these inputs as read-only. The three functions have the following contracts:
 
-
-| Function                        | Return value                           | When it runs                                                                     |
-| ------------------------------- | -------------------------------------- | -------------------------------------------------------------------------------- |
-| `trigger(context)`              | `True` to run the selector.            | When the policy evaluates new history.                                           |
-| `selector(context)`             | A `set[int]` of message IDs to delete. | Only when the trigger returns `True`.                                            |
+| Function | Return value | When it runs |
+| --- | --- | --- |
+| `trigger(context)` | `True` to run the selector. | When the policy evaluates new history. |
+| `selector(context)` | A `set[int]` of message IDs to delete. | Only when the trigger returns `True`. |
 | `reposition(context, selected)` | `True` to compact retained positions.  | Independently of the trigger; `selected` is empty when no messages are selected. |
 
 
