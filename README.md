@@ -53,9 +53,11 @@ python -m akv.system.launch_server \
 
 For additional launch options, see the [system README](akv/system/README.md).
 
-### 2. Apply an AKV policy
+### 2. Apply an AKV CachePolicy
 
-This payload contains two completed tool calls, with results at message indices 2 and 4. Apply a policy that keeps the latest batch and triggers Reposition:
+AKV uses `CachePolicy` to determine cache operations based on the current request and execution history. Given an OpenAI-compatible request payload, `CachePolicy` augments it with cache operation fields as needed: `drop_message` specifies which messages' KV entries to drop and when to apply Drop, while `reposition` specifies when to apply Reposition to compact the retained token positions.
+
+The following example applies a policy that retains the KV entries of the latest tool batch and schedules Reposition. The request contains two completed tool calls, with results at message indices 2 and 4.
 
 ```python
 from akv.agent import CachePolicy
@@ -105,7 +107,7 @@ policy = CachePolicy(
 akv_payload, state = policy.process(payload, api_style="sglang")
 ```
 
-Here, `payload` is OpenAI Compatible, and `akv_payload` preserves the entire original payload and adds:
+Here, `akv_payload` preserves the entire original payload and adds:
 
 ```json
 {
@@ -113,8 +115,52 @@ Here, `payload` is OpenAI Compatible, and `akv_payload` preserves the entire ori
   "reposition": [4]
 }
 ```
+`drop_message` specifies which messages' KV entries to remove and after which message to apply the deletion. `reposition` specifies when to compact the retained token positions.
 
-Where `messages` contains the conversation history. `drop_message` selects which messages to drop the model's active context and where; `reposition` compacts the positions of the remaining tokens.
+<details>
+<summary>View the complete akv_payload</summary>
+
+```python
+akv_payload = {
+    "model": "gpt-oss-120b",
+    "messages": [
+        {
+            "role": "user",
+            "content": "Compare records A and B."
+        },
+        {
+            "role": "assistant",
+            "tool_calls": [{
+                "id": "a", "type": "function",
+                "function": {"name": "read_record", "arguments": '{"record_id":"A"}'},
+            }],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "a",
+            "content": "Record A"
+        },
+        {
+            "role": "assistant",
+            "tool_calls": [{
+                "id": "b", "type": "function",
+                "function": {"name": "read_record", "arguments": '{"record_id":"B"}'},
+            }],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "b",
+            "content": "Record B"
+        },
+    ],
+    "drop_message": {"4": [2]},
+    "reposition": [4],
+    "stream": True,
+    "max_completion_tokens": 2048,
+}
+```
+
+</details>
 
 ### 3. Send request to system
 
@@ -130,6 +176,8 @@ response = requests.post(
 )
 response.raise_for_status()
 ```
+
+After processing message 4, AKV System removes message 2's KV entries, compacts the retained token positions, and generates the next reply using the remaining context.
 
 <details>
 <summary>Explanation to the request</summary>
@@ -166,7 +214,7 @@ Hints:
 
 The [demo code](examples/demo.py) works as an agent, asking the model to find a parcel’s final delivery location. 
 
-When the agent works, the model can call `drop_context` to drop `tool_call` that are no longer need. Before the next model request, AKV converts successful drop requests into `drop_message` operations. Reposition is scheduled after every three completed tool-call batches.
+During execution, the model can call `drop_context` to drop `tool_call` that are no longer need. Before the next model request, AKV‘s `CachePolicy` converts successful drop requests into `drop_message` fields. Reposition is scheduled after every three completed tool-call batches.
 
 Run the demo with:
 
@@ -185,53 +233,61 @@ Integrating AKV requires only one step: **process the final payload before sendi
 
 **Optional: register cache tools.** If your policy uses a [CacheTool](akv/agent/policies/tools.py), register its schema and `execute` handler with the harness before starting the agent loop.
 
-<details>
-<summary>Workflow Diagram</summary>
-
 ![Agent-side request processing and the AKV System backend](resource/agent-system-workflow.svg)
-
-</details>
 
 ## Details
 
-### Agent: policy composition
+### Agent: Cache Engineering with CachePolicy
 
-Compose three independent components with `CachePolicy`:
+`CachePolicy` manages the KV cache throughout agent execution by scheduling Drop and Reposition. **Drop removes selected messages' KV entries without changing the retained token positions, while Reposition compacts those positions.** Retained KV entries are reused without re-prefilling after both operations.
 
+<details>
+<summary>Example of CachePolicy works in Multi-Turn Execution</summary>
 
-| Component | Responsibility | Built-in choices |
-| --- | --- | --- |
-| `trigger` | Decide when to select messages for deletion. | [BatchTrigger, TokenTrigger, ToolTrigger](akv/agent/policies/triggers.py) |
-| `selector` | Decide which canonical messages to delete. | [KeepBatches, KeepTokens, ToolSelection](akv/agent/policies/selectors.py) |
-| `reposition` | Decide when to compact retained positions. | [BatchReposition, TokenReposition, ToolReposition](akv/agent/policies/reposition.py) |
+For example, the following policy retains the KV entries of the latest two tool batches and schedules Reposition every two batches starting from the fourth:
+
+```python
+policy = CachePolicy(
+    trigger=BatchTrigger(),
+    selector=KeepBatches(2),
+    reposition=BatchReposition(after=4, every=2),
+)
+```
+
+Assuming each tool batch occupies one token block, the cache evolves as follows:
+
+| Batch | Tool history | New Drop | Reposition | Retained KV (positions) |
+|---|---|---|---|---|
+| 1 | A | — | No | A(0) |
+| 2 | A, B | — | No | A(0), B(1) |
+| 3 | A, B, C | A | No | B(1), C(2) |
+| 4 | A, B, C, D | B | Yes | C(0), D(1) |
+| 5 | A, B, C, D, E | C | No | D(1), E(2) |
+| 6 | A, B, C, D, E, F | D | Yes | E(0), F(1) |
+
+Here, positions are illustrative block indices rather than actual token positions. `Tool history` shows the unchanged, cumulative tool history; `New Drop` lists only the tool results whose KV entries are newly dropped at each step.
+</details>
+
+#### Customizing `CachePolicy`
+
+`CachePolicy` combines three independently configurable components. Each receives a `PolicyContext` containing the current request and earlier cache operations.
+
+| Component | Return value | When it runs | Built-in choices |
+| --- | --- | --- | --- |
+| `trigger` | `bool`: `True` to run the selector. | When the policy evaluates new history. | [BatchTrigger, TokenTrigger, ToolTrigger](akv/agent/policies/triggers.py) |
+| `selector` | `set[int]`: canonical IDs of messages whose KV entries to drop. | Only when the trigger returns `True`. | [KeepBatches, KeepTokens, ToolSelection](akv/agent/policies/selectors.py) |
+| `reposition` | `bool`: `True` to schedule Reposition. | On new history, independently of the trigger. | [BatchReposition, TokenReposition, ToolReposition](akv/agent/policies/reposition.py) |
 
 
 The built-in components support three approaches:
 
 - **Batch-based:** schedule Drop and Reposition by completed tool batches and retain the latest batches. A batch includes all results from one assistant tool-calling message.
 - **Token-based:** use token thresholds to trigger Drop or Reposition, and token budgets to select old results for removal. These components require a token counter matching the model.
-- **Tool-based:** let the model select messages through a registered cache tool. The policy reads successful tool results to schedule Drop and, optionally, Reposition.
+- **Tool-based:** let the model select messages for Drop through a registered cache tool. The policy reads successful tool results to schedule Drop and, optionally, Reposition.
 
-To customize a policy, supply your own `trigger`, `selector`, or `reposition` function to `CachePolicy`. Each function reads a `PolicyContext` supplied by AKV and returns its decision. The context provides the current request and earlier cache decisions, including:
+To customize a policy, supply your own `trigger`, `selector`, or `reposition` function to `CachePolicy`. 
 
-
-| Context field | Meaning |
-| --- | --- |
-| `context.request.messages` | The full message list from the payload. Each message's zero-based index is its ID. |
-| `context.hidden` | IDs already selected for deletion by earlier policy decisions. These messages remain in the payload. |
-| `context.new_batch` | Whether a new complete tool batch has appeared since the previous processed request. |
-
-
-The three functions have the following contracts:
-
-| Function | Return value | When it runs |
-| --- | --- | --- |
-| `trigger(context)` | `True` to run the selector. | When the policy evaluates new history. |
-| `selector(context)` | A `set[int]` of message IDs to delete. | Only when the trigger returns `True`. |
-| `reposition(context, selected)` | `True` to compact retained positions.  | Independently of the trigger; `selected` is empty when no messages are selected. |
-
-
-For example, this policy checks after each completed batch, keeps the latest visible tool result, and compacts positions whenever it deletes older results:
+For example, this policy checks after each completed batch, selects all but the latest visible tool result for Drop, and schedules Reposition whenever the selection is nonempty:
 
 ```python
 from akv.agent import CachePolicy, PolicyContext
@@ -260,18 +316,18 @@ policy = CachePolicy(
 )
 ```
 
-With the Quick Start payload, this policy selects message 2 for deletion, keeps message 4 and triggers reposition. It adds `drop_message={"4": [2]}` and `reposition=[4]` to the request.
+With the Quick Start payload, this policy selects message 2 for Drop, retains message 4's KV entries, and schedules Reposition. It adds `drop_message={"4": [2]}` and `reposition=[4]` to the request.
 
 ### System: Drop and Reposition
 
-AKV extends standard chat interface with three optional request fields for drop and reposition. An AKV policy can generate these fields, or you can write them directly, alongside `message` with `JSON` body.
+AKV extends standard chat interface with three optional request fields to realize drop and reposition in serving system. An AKV policy can generate these fields, or you can write them directly, alongside `message` with `JSON` body.
 
 | Field | How to write it | Meaning |
 | --- | --- | --- |
-| `drop_message` | `{"3": [1, 2]}` | After processing message 3, drop the KV cache of messages 1 and 2. The key specifies where; the list specifies what to drop. |
-| `drop_rule` | `{"type": "message_drop", "drop_messages": {"3": [1, 2]}}` | Equivalent to the `drop_message` example above. **Use either form, not both.** |
-| `drop_rule` | `{"type": "thinking_drop"}` | Drop each historical assistant message’s reasoning KV after processing that message, while keeping its final answer. Do not use it with `drop_message` or non-thinking mode. |
-| `reposition` | `[3]` | After processing message 3, compact the remaining token positions to remove gaps. If Drop is also scheduled there, Drop runs first. |
+| `drop_message` | `Dict: {"3": [1, 2]}` | After processing message 3, drop the KV cache of messages 1 and 2. The key specifies where; the list specifies what to drop. |
+| `drop_rule` | `Dict: {"type": "message_drop", "drop_messages": {"3": [1, 2]}}` | Equivalent to the `drop_message` example above. **Use either form, not both.** |
+| `drop_rule` | `Dict: {"type": "thinking_drop"}` | Drop each historical assistant message’s reasoning KV after processing that message, while keeping its final answer. Do not use it with `drop_message` or non-thinking mode. |
+| `reposition` | `List: [3]` | After processing message 3, compact the remaining token positions to remove gaps. If Drop is also scheduled there, Drop runs first. |
 
 For complete requests, see:
 - [Message Drop](examples/message_drop.py): two equivalent ways to specify which messages to drop, combined with Reposition.
@@ -284,13 +340,13 @@ Context requests report `cached_tokens`, `drop_skipped_tokens`, and `repos_token
 Drop/Reposition is currently enabled for these text-model architectures:
 
 
-| Model family                                  | Architecture                              |
-| --------------------------------------------- | ----------------------------------------- |
-| Qwen                                          | `QWenLMHeadModel`                         |
-| Qwen1.5, Qwen2, Qwen2.5                       | `Qwen2ForCausalLM`, `Qwen2MoeForCausalLM` |
+| Model family                                  | Architecture |
+| --- | --- |
+| Qwen | `QWenLMHeadModel` |
+| Qwen1.5, Qwen2, Qwen2.5 | `Qwen2ForCausalLM`, `Qwen2MoeForCausalLM` |
 | Qwen3, including MoE variants and AgenticQwen | `Qwen3ForCausalLM`, `Qwen3MoeForCausalLM` |
-| GPT-OSS                                       | `GptOssForCausalLM`                       |
-| MiniMax-M2 family, including M2.7             | `MiniMaxM2ForCausalLM`                    |
+| GPT-OSS | `GptOssForCausalLM` |
+| MiniMax-M2 family, including M2.7 | `MiniMaxM2ForCausalLM` |
 
 
 See the [system README](akv/system/README.md) for runtime requirements and compatibility details.
