@@ -57,11 +57,11 @@ For additional launch options, see the [system README](akv/system/README.md).
 
 AKV uses `CachePolicy` to determine cache operations based on the current request and execution history. Given an OpenAI-compatible request payload, `CachePolicy` augments it with cache operation fields as needed: `drop_message` specifies which messages' KV entries to drop and when to apply Drop, while `reposition` specifies when to apply Reposition to compact the retained token positions.
 
-The following example applies a policy that retains the KV entries of the latest tool batch and schedules Reposition. The request contains two completed tool calls, with results at message indices 2 and 4.
+The following example retains KV entries for tool results from the latest completed turn and schedules Reposition. Here, a turn consists of one assistant response that calls tools and all of its tool results.
 
 ```python
 from akv.agent import CachePolicy
-from akv.agent.policies import BatchTrigger, KeepBatches, BatchReposition
+from akv.agent.policies import TurnTrigger, TurnSelection, TurnReposition
 
 payload = {
     "model": "gpt-oss-120b",
@@ -100,22 +100,23 @@ payload = {
 }
 
 policy = CachePolicy(
-    trigger=BatchTrigger(),
-    selector=KeepBatches(1),
-    reposition=BatchReposition(after=2, every=2),
+    trigger=TurnTrigger(),
+    selector=TurnSelection(1),
+    reposition=TurnReposition(after=2, every=2),
 )
-akv_payload, state = policy.process(payload, api_style="sglang")
+akv_payload, cache_operation_history = policy.process(payload, api_style="sglang")
 ```
 
-Here, `akv_payload` preserves the entire original payload and adds:
+See [Customizing `CachePolicy`](#customizing-cachepolicy) for details on the three components: `trigger`, `selector`, and `reposition`.
 
-```json
-{
-  "drop_message": {"4": [2]},
-  "reposition": [4]
-}
-```
-`drop_message` specifies which messages' KV entries to remove and after which message to apply the deletion. `reposition` specifies when to compact the retained token positions.
+The request contains two completed tool calls, with results at message indices 2 and 4. `akv_payload` preserves the original payload and adds the following cache operations:
+
+  {
+    "drop_message": {"4": [2]},
+    "reposition": [4]
+  }
+
+These operations instruct AKV System to drop the earlier tool result (message 2) after processing the new result (message 4), then compact the remaining token positions.
 
 <details>
 <summary>View the complete akv_payload</summary>
@@ -209,12 +210,11 @@ Hints:
 
 </details>
 
+## Cache Management as a Tool
 
-### Run a tool-calling Agent example
+The [demo](examples/demo.py) provides a complete example of an agent making tool calls over multiple turns. The agent follows a chain of delivery records to find a parcel’s final delivery location.
 
-The [demo code](examples/demo.py) works as an agent, asking the model to find a parcel’s final delivery location. 
-
-During execution, the model can call `drop_context` to drop `tool_call` that are no longer need. Before the next model request, AKV‘s `CachePolicy` converts successful drop requests into `drop_message` fields. Reposition is scheduled after every three completed tool-call batches.
+AKV’s [CacheTool](akv/agent/policies/tools.py) interface lets agents manage the KV cache through tool calls. In this demo, `DropContextTool` exposes `drop_context`, which the agent can call to schedule Drop for tool results it no longer needs. Before the next model call, `CachePolicy` converts successful `drop_context` calls into `drop_message` operations. Reposition is scheduled after every three completed tool-calling turns.
 
 Run the demo with:
 
@@ -227,7 +227,7 @@ python examples/demo.py \
 
 As the demo runs, you can watch the model follow the chain of delivery records, manage its context by discarding results it no longer needs, and ultimately identify the parcel's final delivery location.
 
-## Integrate with an agent harness
+## Integrate with an Agent Harness
 
 Integrating AKV requires only one step: **process the final payload before sending request to the system**. After the harness serializes its history and tools, pass the payload to [CachePolicy.process](akv/agent/policy.py), then send the returned payload to AKV System.
 
@@ -244,19 +244,19 @@ Integrating AKV requires only one step: **process the final payload before sendi
 <details>
 <summary>Example of CachePolicy works in Multi-Turn Execution</summary>
 
-For example, the following policy retains the KV entries of the latest two tool batches and schedules Reposition every two batches starting from the fourth:
+For example, the following policy retains KV entries for tool results from the latest two turns and schedules Reposition every two turns starting from the fourth:
 
 ```python
 policy = CachePolicy(
-    trigger=BatchTrigger(),
-    selector=KeepBatches(2),
-    reposition=BatchReposition(after=4, every=2),
+    trigger=TurnTrigger(),
+    selector=TurnSelection(2),
+    reposition=TurnReposition(after=4, every=2),
 )
 ```
 
-Assuming each tool batch occupies one token block, the cache evolves as follows:
+Assuming each turn's tool results occupy one token block, the cache evolves as follows:
 
-| Batch | Tool history | New Drop | Reposition | Retained KV (positions) |
+| Turn | Tool history | New Drop | Reposition | Retained KV (positions) |
 |---|---|---|---|---|
 | 1 | A | — | No | A(0) |
 | 2 | A, B | — | No | A(0), B(1) |
@@ -270,31 +270,30 @@ Here, positions are illustrative block indices rather than actual token position
 
 #### Customizing `CachePolicy`
 
-`CachePolicy` combines three independently configurable components. Each receives a `PolicyContext` containing the current request and earlier cache operations.
+`CachePolicy` separates when to drop, what to drop, and whether to reposition. Each component receives a `PolicyContext` containing the current request and cache operation history.
 
-| Component | Return value | When it runs | Built-in choices |
-| --- | --- | --- | --- |
-| `trigger` | `bool`: `True` to run the selector. | When the policy evaluates new history. | [BatchTrigger, TokenTrigger, ToolTrigger](akv/agent/policies/triggers.py) |
-| `selector` | `set[int]`: canonical IDs of messages whose KV entries to drop. | Only when the trigger returns `True`. | [KeepBatches, KeepTokens, ToolSelection](akv/agent/policies/selectors.py) |
-| `reposition` | `bool`: `True` to schedule Reposition. | On new history, independently of the trigger. | [BatchReposition, TokenReposition, ToolReposition](akv/agent/policies/reposition.py) |
-
+| Operation | Component | Purpose | Return value | Built-in choices |
+| --- | --- | --- | --- | --- |
+| Drop | `trigger` | When to drop. | `bool`: `True` to trigger Drop. | [TurnTrigger, TokenTrigger, ModelTrigger](akv/agent/policies/triggers.py) |
+| Drop | `selector` | What to drop. | `set[int]`: IDs of messages whose KV entries to drop. | [TurnSelection, TokenSelection, ModelSelection](akv/agent/policies/selectors.py) |
+| Reposition | `reposition` | Whether to reposition. | `bool`: `True` to compact retained token positions. | [TurnReposition, TokenReposition, ModelReposition](akv/agent/policies/reposition.py) |
 
 The built-in components support three approaches:
 
-- **Batch-based:** schedule Drop and Reposition by completed tool batches and retain the latest batches. A batch includes all results from one assistant tool-calling message.
-- **Token-based:** use token thresholds to trigger Drop or Reposition, and token budgets to select old results for removal. These components require a token counter matching the model.
-- **Tool-based:** let the model select messages for Drop through a registered cache tool. The policy reads successful tool results to schedule Drop and, optionally, Reposition.
+- **Turn-based:** trigger Drop and Reposition at specified turn intervals, and retain context from the latest turns.
+- **Token-based:** use token counts to decide when to drop or reposition, and how much context to retain. These components require a token counter matching the model.
+- **Model-based:** let the model decide what to drop and whether to reposition through a `CacheTool`.
 
 To customize a policy, supply your own `trigger`, `selector`, or `reposition` function to `CachePolicy`. 
 
-For example, this policy checks after each completed batch, selects all but the latest visible tool result for Drop, and schedules Reposition whenever the selection is nonempty:
+For example, this policy checks after each completed tool-calling turn, selects all but the latest visible tool result for Drop, and schedules Reposition whenever the selection is nonempty:
 
 ```python
 from akv.agent import CachePolicy, PolicyContext
 
 
-def after_tool_batch(context: PolicyContext) -> bool:
-    return context.new_batch
+def after_tool_turn(context: PolicyContext) -> bool:
+    return context.new_turn
 
 
 def select_old_results(context: PolicyContext) -> set[int]:
@@ -310,7 +309,7 @@ def reposition_after_drop(context: PolicyContext, selected: set[int]) -> bool:
 
 
 policy = CachePolicy(
-    trigger=after_tool_batch,
+    trigger=after_tool_turn,
     selector=select_old_results,
     reposition=reposition_after_drop,
 )
