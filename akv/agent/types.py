@@ -80,7 +80,7 @@ class PolicyRequest:
 
 @dataclass(frozen=True)
 class CacheAction:
-    """A policy's new decision, before it is added to cumulative state."""
+    """A policy's new decision, before it is added to cache operation history."""
 
     drop_message_ids: tuple[int, ...] = ()
     reposition: bool = False
@@ -116,12 +116,13 @@ class CacheOperation:
 
 
 @dataclass(frozen=True)
-class CacheState:
-    """Caller-owned operation history and the last processed message prefix.
+class CacheOperationHistory:
+    """Cumulative Drop/Reposition decisions and the last processed message prefix.
 
     This contains chosen instructions, not server acknowledgements or GPU data.
-    Keep a separate state for each conversation branch. Policy changes are not
-    recorded: each call supplies the rules or actions for its current boundary.
+    The caller keeps a separate cache operation history for each conversation
+    branch. Each call supplies the rules or actions for its current boundary;
+    changes to those rules are not recorded.
     """
 
     operations: tuple[CacheOperation, ...] = ()
@@ -131,16 +132,16 @@ class CacheState:
 
     def __post_init__(self) -> None:
         if type(self.message_count) is not int or self.message_count < 0:
-            raise ValueError("Cache state message_count must be nonnegative")
+            raise ValueError("Cache operation history message_count must be nonnegative")
         operations = tuple(self.operations)
         previous, dropped = -1, set()
         for operation in operations:
             if not isinstance(operation, CacheOperation):
-                raise ValueError("Cache state requires CacheOperation entries")
+                raise ValueError("Cache operation history requires CacheOperation entries")
             if not previous < operation.message_id < self.message_count:
                 raise ValueError("Cache operations must have increasing processed boundaries")
             if dropped.intersection(operation.drop_message_ids):
-                raise ValueError("Cache state cannot delete the same message twice")
+                raise ValueError("Cache operation history cannot delete the same message twice")
             previous = operation.message_id
             dropped.update(operation.drop_message_ids)
         for digest in (self.history_digest, self.context_digest):
@@ -150,7 +151,7 @@ class CacheState:
                 else digest == ""
             )
             if not valid:
-                raise ValueError("Cache state digests must match its processed prefix")
+                raise ValueError("Cache operation history digests must match its processed prefix")
         object.__setattr__(self, "operations", operations)
 
     def to_dict(self) -> JsonDict:
@@ -158,7 +159,7 @@ class CacheState:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, value: Mapping[str, Any]) -> CacheState:
+    def from_dict(cls, value: Mapping[str, Any]) -> CacheOperationHistory:
         data = dict(value)
         data["operations"] = tuple(CacheOperation(**item) for item in data.get("operations", ()))
         return cls(**data)

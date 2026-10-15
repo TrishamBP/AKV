@@ -9,14 +9,14 @@ import json
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
-from akv.agent import CachePolicy, CacheState
+from akv.agent import CacheOperationHistory, CachePolicy
 from akv.agent.backends import send_chat_request
 from akv.agent.policies import (
-    BatchReposition,
     CacheTool,
     DropContextTool,
-    ToolSelection,
-    ToolTrigger,
+    ModelSelection,
+    ModelTrigger,
+    TurnReposition,
 )
 from akv.agent.types import BackendTraceContext, JsonDict, ToolCall
 
@@ -105,7 +105,7 @@ def run_agent(
 ) -> str:
     if max_steps <= 0 or max_tokens <= 0:
         raise ValueError("max_steps and max_tokens must be positive")
-    state = CacheState()
+    cache_operation_history = CacheOperationHistory()
     tools: list[JsonDict] = []
     handlers: dict[str, ToolHandler] = {}
     result_formatters: dict[str, ResultFormatter] = {}
@@ -114,7 +114,9 @@ def run_agent(
     if cache_tool:
         register_tool(
             cache_tool.schema,
-            lambda arguments, messages: cache_tool.execute(arguments, messages=messages, state=state),
+            lambda arguments, messages: cache_tool.execute(
+                arguments, messages=messages, cache_operation_history=cache_operation_history
+            ),
             tools=tools,
             handlers=handlers,
         )
@@ -156,14 +158,18 @@ def run_agent(
                 "reasoning_effort": "medium",
                 "separate_reasoning": True,
             }
-            # 2. Apply this request's rules using the cumulative state.
-            prepared, next_state = policy.process(payload, state=state, api_style="sglang")
+            # 2. Apply this request's rules using the cache operation history.
+            prepared, next_cache_operation_history = policy.process(
+                payload, cache_operation_history=cache_operation_history, api_style="sglang"
+            )
             for label, body in (("before", payload), ("after", prepared)):
                 (payloads / f"{step:02d}-{label}.json").write_text(
                     json.dumps(body, ensure_ascii=False, indent=2) + "\n"
                 )
-            state_snapshot = next_state.to_dict()
-            new_operations = state_snapshot["operations"][len(state.operations) :]
+            cache_operation_history_snapshot = next_cache_operation_history.to_dict()
+            new_operations = cache_operation_history_snapshot["operations"][
+                len(cache_operation_history.operations) :
+            ]
             event = {
                 "step": step,
                 "completed_tool_batches": completed_batches,
@@ -171,7 +177,7 @@ def run_agent(
                 "drop_message": prepared.get("drop_message"),
                 "reposition": prepared.get("reposition"),
                 "new_operations": new_operations,
-                "cache_state": state_snapshot,
+                "cache_operation_history": cache_operation_history_snapshot,
             }
             trace["steps"].append(event)
             print(
@@ -186,7 +192,7 @@ def run_agent(
                 prepared,
                 trace_context=BackendTraceContext(output / "calls" / f"{step:02d}", {"step": step}),
             )
-            state = next_state
+            cache_operation_history = next_cache_operation_history
             event.update(
                 finish_reason=result.finish_reason, usage=result.usage, backend_metadata=result.metadata
             )
@@ -233,9 +239,9 @@ def main() -> None:
     args = parser.parse_args()
     cache_tool = DropContextTool()
     policy = CachePolicy(
-        trigger=ToolTrigger(cache_tool),
-        selector=ToolSelection(cache_tool),
-        reposition=BatchReposition(after=3, every=3),
+        trigger=ModelTrigger(cache_tool),
+        selector=ModelSelection(cache_tool),
+        reposition=TurnReposition(after=3, every=3),
     )
     run_agent(
         args.base_url,

@@ -1,20 +1,20 @@
 """Decision components that can be freely combined in CachePolicy."""
 
-from .reposition import BatchReposition, TokenReposition, ToolReposition
-from .selectors import KeepBatches, KeepTokens, ToolSelection
+from .reposition import ModelReposition, TokenReposition, TurnReposition
+from .selectors import ModelSelection, TokenSelection, TurnSelection
 from .tools import CacheTool, DropContextTool
-from .triggers import BatchTrigger, TokenTrigger, ToolTrigger
+from .triggers import ModelTrigger, TokenTrigger, TurnTrigger
 
 __all__ = [
     "CacheTool",
     "DropContextTool",
-    "BatchTrigger",
+    "TurnTrigger",
     "TokenTrigger",
-    "ToolTrigger",
-    "KeepBatches",
-    "KeepTokens",
-    "ToolSelection",
-    "BatchReposition",
+    "ModelTrigger",
+    "TurnSelection",
+    "TokenSelection",
+    "ModelSelection",
+    "TurnReposition",
     "TokenReposition",
-    "ToolReposition",
+    "ModelReposition",
 ]

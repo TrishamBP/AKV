@@ -9,7 +9,7 @@ from .utils.context import PolicyContext
 
 
 @dataclass(frozen=True)
-class BatchTrigger:
+class TurnTrigger:
     after: int = 1
     every: int | None = 1
 
@@ -17,7 +17,7 @@ class BatchTrigger:
         check_schedule(self.after, self.every)
 
     def __call__(self, context: PolicyContext) -> bool:
-        return context.new_batch and scheduled(context.request.call_index, self.after, self.every)
+        return context.new_turn and scheduled(context.request.call_index, self.after, self.every)
 
 
 @dataclass(frozen=True)
@@ -36,7 +36,7 @@ class TokenTrigger:
 
 
 @dataclass(frozen=True)
-class ToolTrigger:
+class ModelTrigger:
     tool: CacheTool
 
     def __call__(self, context: PolicyContext) -> bool:

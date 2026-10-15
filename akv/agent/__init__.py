@@ -1,11 +1,11 @@
-"""Cache policies with caller-owned state for existing agent harnesses."""
+"""Cache policies with caller-owned operation history for existing agent harnesses."""
 
 from .policies.utils.context import PolicyContext
 from .policy import CachePolicy, DropTrigger, MessageSelector, RepositionRule
 from .types import (
     CacheAction,
     CacheOperation,
-    CacheState,
+    CacheOperationHistory,
     GeneratedMessage,
     GenerationResult,
     JsonDict,
@@ -19,7 +19,7 @@ __all__ = [
     "MessageSelector",
     "RepositionRule",
     "CacheAction",
-    "CacheState",
+    "CacheOperationHistory",
     "CacheOperation",
     "GeneratedMessage",
     "GenerationResult",

@@ -14,8 +14,8 @@ def check_target(target: str) -> None:
 
 
 @dataclass(frozen=True)
-class KeepBatches:
-    """Retain the latest complete batches, including all parallel results."""
+class TurnSelection:
+    """Select older messages for Drop while retaining the latest ``count`` complete turns."""
 
     count: int
     target: str = "tool"
@@ -34,7 +34,9 @@ class KeepBatches:
 
 
 @dataclass(frozen=True)
-class KeepTokens:
+class TokenSelection:
+    """Select older messages for Drop using a retained-token budget of ``tokens``."""
+
     tokens: int
     counter: ChatTokenCounter
     target: str = "tool"
@@ -77,7 +79,7 @@ def expired_messages(request: PolicyRequest, expired: set[int], target: str) -> 
 
 
 @dataclass(frozen=True)
-class ToolSelection:
+class ModelSelection:
     tool: CacheTool
 
     def __call__(self, context: PolicyContext) -> set[int]:

@@ -9,7 +9,7 @@ from .utils.context import PolicyContext
 
 
 @dataclass(frozen=True)
-class BatchReposition:
+class TurnReposition:
     after: int = 1
     every: int | None = 1
 
@@ -17,7 +17,7 @@ class BatchReposition:
         check_schedule(self.after, self.every)
 
     def __call__(self, context: PolicyContext, selected: set[int]) -> bool:
-        return context.new_batch and scheduled(context.request.call_index, self.after, self.every)
+        return context.new_turn and scheduled(context.request.call_index, self.after, self.every)
 
 
 @dataclass(frozen=True)
@@ -29,9 +29,14 @@ class TokenReposition:
         positive_integer(self.threshold, "threshold")
 
     def __call__(self, context: PolicyContext, selected: set[int]) -> bool:
-        last = max((op.message_id for op in context.state.operations if op.reposition), default=-1)
+        last = max(
+            (op.message_id for op in context.cache_operation_history.operations if op.reposition), default=-1
+        )
         compacted = {
-            i for op in context.state.operations if op.message_id <= last for i in op.drop_message_ids
+            i
+            for op in context.cache_operation_history.operations
+            if op.message_id <= last
+            for i in op.drop_message_ids
         }
         compacted_tokens = context.tokens(self.counter, compacted)
         return (
@@ -41,7 +46,7 @@ class TokenReposition:
 
 
 @dataclass(frozen=True)
-class ToolReposition:
+class ModelReposition:
     tool: CacheTool
 
     def __call__(self, context: PolicyContext, selected: set[int]) -> bool:

@@ -5,7 +5,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from ..types import CacheAction, CacheState, JsonDict
+from ..types import CacheAction, CacheOperationHistory, JsonDict
 from .utils.context import PolicyContext
 
 
@@ -13,8 +13,9 @@ class CacheTool(Protocol):
     """The harness executes; the policy only interprets successful receipts.
 
     Pass canonical history before the calling assistant message and the adopted
-    cache state used to generate that call. Argument and receipt formats belong
-    to each implementation. read_result must never execute the tool again.
+    cache operation history used to generate that call. Argument and receipt
+    formats belong to each implementation. read_result must never execute the
+    tool again.
     """
 
     name: str
@@ -23,7 +24,11 @@ class CacheTool(Protocol):
     def schema(self) -> JsonDict: ...
 
     def execute(
-        self, arguments: str | Mapping[str, Any], *, messages: Sequence[JsonDict], state: CacheState
+        self,
+        arguments: str | Mapping[str, Any],
+        *,
+        messages: Sequence[JsonDict],
+        cache_operation_history: CacheOperationHistory,
     ) -> JsonDict: ...
 
     def read_result(
@@ -32,7 +37,7 @@ class CacheTool(Protocol):
         content: Any,
         *,
         messages: Sequence[JsonDict],
-        state: CacheState,
+        cache_operation_history: CacheOperationHistory,
     ) -> CacheAction | None: ...
 
 
@@ -91,10 +96,12 @@ class DropContextTool:
             },
         }
 
-    def available_ids(self, messages: Sequence[JsonDict], state: CacheState) -> list[int]:
-        if state.message_count > len(messages):
-            raise ValueError("Cache state extends beyond the history before this tool call")
-        hidden = {i for op in state.operations for i in op.drop_message_ids}
+    def available_ids(
+        self, messages: Sequence[JsonDict], cache_operation_history: CacheOperationHistory
+    ) -> list[int]:
+        if cache_operation_history.message_count > len(messages):
+            raise ValueError("Cache operation history extends beyond the history before this tool call")
+        hidden = {i for op in cache_operation_history.operations for i in op.drop_message_ids}
         return [
             i
             for i, message in enumerate(messages)
@@ -102,10 +109,14 @@ class DropContextTool:
         ]
 
     def execute(
-        self, arguments: str | Mapping[str, Any], *, messages: Sequence[JsonDict], state: CacheState
+        self,
+        arguments: str | Mapping[str, Any],
+        *,
+        messages: Sequence[JsonDict],
+        cache_operation_history: CacheOperationHistory,
     ) -> JsonDict:
         """Return a receipt; do not contact the server or claim deletion has occurred."""
-        available = self.available_ids(messages, state)
+        available = self.available_ids(messages, cache_operation_history)
         try:
             return scheduled_result(self.action(arguments, available))
         except ToolArgumentError as error:
@@ -154,12 +165,12 @@ class DropContextTool:
         content: Any,
         *,
         messages: Sequence[JsonDict],
-        state: CacheState,
+        cache_operation_history: CacheOperationHistory,
     ) -> CacheAction | None:
         """Interpret a matching success receipt without executing the tool."""
         try:
             outcome = json.loads(content)
-            action = self.action(arguments, self.available_ids(messages, state))
+            action = self.action(arguments, self.available_ids(messages, cache_operation_history))
         except (ValueError, TypeError):
             return None
         return action if outcome == scheduled_result(action) else None
@@ -180,7 +191,7 @@ def tool_actions(context: PolicyContext, tool: CacheTool) -> CacheAction:
     key = ("tool_actions", id(tool))
     if key in context.values:
         return context.values[key]
-    request, state = context.request, context.state
+    request, cache_operation_history = context.request, context.cache_operation_history
     selected, reposition = set(), False
     for unit in request.message_units:
         assistant, *results = unit
@@ -188,7 +199,7 @@ def tool_actions(context: PolicyContext, tool: CacheTool) -> CacheAction:
             continue
         calls = {call["id"]: call for call in request.messages[assistant]["tool_calls"]}
         for i in results:
-            if i < state.message_count:
+            if i < cache_operation_history.message_count:
                 continue
             result = request.messages[i]
             call = calls[result["tool_call_id"]]
@@ -198,7 +209,7 @@ def tool_actions(context: PolicyContext, tool: CacheTool) -> CacheAction:
                 call["function"].get("arguments", ""),
                 result.get("content"),
                 messages=request.messages[:assistant],
-                state=state,
+                cache_operation_history=cache_operation_history,
             )
             if action is None:
                 continue

@@ -3,23 +3,25 @@
 from dataclasses import dataclass, field
 from typing import Any
 
-from ...types import CacheState, ChatMessageTokenLayout, ChatTokenCounter, PolicyRequest
+from ...types import CacheOperationHistory, ChatMessageTokenLayout, ChatTokenCounter, PolicyRequest
 
 
 @dataclass
 class PolicyContext:
     request: PolicyRequest
-    state: CacheState
+    cache_operation_history: CacheOperationHistory
     layouts: dict[int, ChatMessageTokenLayout] = field(default_factory=dict)
     values: dict[object, Any] = field(default_factory=dict)
 
     @property
     def hidden(self) -> set[int]:
-        return {i for op in self.state.operations for i in op.drop_message_ids}
+        return {i for op in self.cache_operation_history.operations for i in op.drop_message_ids}
 
     @property
-    def new_batch(self) -> bool:
-        return any(i >= self.state.message_count for i in self.request.completed_call_message_ids)
+    def new_turn(self) -> bool:
+        return any(
+            i >= self.cache_operation_history.message_count for i in self.request.completed_call_message_ids
+        )
 
     def layout(self, counter: ChatTokenCounter) -> ChatMessageTokenLayout:
         key = id(counter)

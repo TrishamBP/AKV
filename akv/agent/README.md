@@ -25,7 +25,7 @@ The main modules are organized into policy composition, shared helpers, and HTTP
 ```text
 akv/agent/
 ├── policy.py                 # CachePolicy.process: compose decisions and prepare requests
-├── types.py                  # Shared request, action, state, and token-layout types
+├── types.py                  # Shared request, action, cache operation history, and token-layout types
 ├── policies/                 # Composable policy components
 │   ├── triggers.py           # When to select messages for deletion
 │   ├── selectors.py          # Which messages to delete

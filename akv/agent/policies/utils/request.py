@@ -6,11 +6,13 @@ from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from typing import Any
 
-from ...types import CacheAction, CacheState, JsonDict, PolicyRequest
+from ...types import CacheAction, CacheOperationHistory, JsonDict, PolicyRequest
 from .messages import atomic_message_units
 
 
-def check_state(payload: Mapping[str, Any], request: PolicyRequest, state: CacheState) -> str:
+def check_cache_operation_history(
+    payload: Mapping[str, Any], request: PolicyRequest, cache_operation_history: CacheOperationHistory
+) -> str:
     """Validate continuity against the adopted prefix and rendering settings."""
     context_digest = digest(
         {
@@ -21,12 +23,15 @@ def check_state(payload: Mapping[str, Any], request: PolicyRequest, state: Cache
             "api_style": request.api_style,
         }
     )
-    if state.message_count and (
-        len(request.messages) < state.message_count
-        or prefix_digest(request, state.message_count) != state.history_digest
-        or context_digest != state.context_digest
+    if cache_operation_history.message_count and (
+        len(request.messages) < cache_operation_history.message_count
+        or prefix_digest(request, cache_operation_history.message_count)
+        != cache_operation_history.history_digest
+        or context_digest != cache_operation_history.context_digest
     ):
-        raise ValueError("Cache state requires the same history prefix, model and rendering settings")
+        raise ValueError(
+            "Cache operation history requires the same history prefix, model and rendering settings"
+        )
     return context_digest
 
 
@@ -83,16 +88,18 @@ def read_request(
     )
 
 
-def prepare_payload(payload: Mapping[str, Any], state: CacheState) -> JsonDict:
+def prepare_payload(payload: Mapping[str, Any], cache_operation_history: CacheOperationHistory) -> JsonDict:
     """Render validated cumulative cache operations without changing any messages."""
     check_payload(payload)
-    if state.message_count > len(payload["messages"]):
-        raise ValueError("Cache state cannot reference messages beyond the current payload")
+    if cache_operation_history.message_count > len(payload["messages"]):
+        raise ValueError("Cache operation history cannot reference messages beyond the current payload")
     prepared = deepcopy(dict(payload))
     schedule = {
-        str(op.message_id): list(op.drop_message_ids) for op in state.operations if op.drop_message_ids
+        str(op.message_id): list(op.drop_message_ids)
+        for op in cache_operation_history.operations
+        if op.drop_message_ids
     }
-    reposition = [op.message_id for op in state.operations if op.reposition]
+    reposition = [op.message_id for op in cache_operation_history.operations if op.reposition]
     if schedule:
         prepared["drop_message"] = schedule
     if reposition:
