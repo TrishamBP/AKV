@@ -13,18 +13,14 @@ body = {
     "temperature": 0,
     "max_tokens": 64,
     "chat_template_kwargs": {"enable_thinking": False},
+    "drop_message": {"3": [1, 2]},
     "reposition": [3],  # Compact positions after message 3.
 }
 
-# After message 3, drop the KV of messages 1 and 2 (zero-based indices).
-for operation in (
-    {"drop_message": {"3": [1, 2]}},
-    {"drop_rule": {"type": "message_drop", "drop_messages": {"3": [1, 2]}}},
-):
-    response = requests.post(
-        "http://localhost:30000/v1/chat/completions",
-        json={**body, **operation},
-        timeout=120,
-    )
-    response.raise_for_status()
-    print(response.json())
+response = requests.post(
+    "http://localhost:8000/v1/chat/completions",
+    json={**body},
+    timeout=120,
+)
+response.raise_for_status()
+print(response.json())

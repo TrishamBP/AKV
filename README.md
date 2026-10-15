@@ -318,20 +318,7 @@ policy = CachePolicy(
 
 With the Quick Start payload, this policy selects message 2 for Drop, retains message 4's KV entries, and schedules Reposition. It adds `drop_message={"4": [2]}` and `reposition=[4]` to the request.
 
-### System: Drop and Reposition
-
-AKV extends standard chat interface with three optional request fields to realize drop and reposition in serving system. An AKV policy can generate these fields, or you can write them directly, alongside `message` with `JSON` body.
-
-| Field | How to write it | Meaning |
-| --- | --- | --- |
-| `drop_message` | `Dict: {"3": [1, 2]}` | After processing message 3, drop the KV cache of messages 1 and 2. The key specifies where; the list specifies what to drop. |
-| `drop_rule` | `Dict: {"type": "message_drop", "drop_messages": {"3": [1, 2]}}` | Equivalent to the `drop_message` example above. **Use either form, not both.** |
-| `drop_rule` | `Dict: {"type": "thinking_drop"}` | Drop each historical assistant message’s reasoning KV after processing that message, while keeping its final answer. Do not use it with `drop_message` or non-thinking mode. |
-| `reposition` | `List: [3]` | After processing message 3, compact the remaining token positions to remove gaps. If Drop is also scheduled there, Drop runs first. |
-
-For complete requests, see:
-- [Message Drop](examples/message_drop.py): two equivalent ways to specify which messages to drop, combined with Reposition.
-- [Thinking Drop](examples/thinking_drop.py): remove historical reasoning while retaining final answers, combined with Reposition.
+### System: Token Details of Usage
 
 Context requests report `cached_tokens`, `drop_skipped_tokens`, and `repos_tokens` in `usage.prompt_tokens_details`, including zero values. See the [system README](akv/system/README.md) for rule details and usage accounting.
 

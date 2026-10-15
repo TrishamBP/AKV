@@ -105,7 +105,6 @@ Message indices are **zero-based**. Here, after message `3`, the server drops me
 | --- | --- |
 | `drop_message` | Map a trigger message index to the message indices whose KV should be dropped **after** that trigger. |
 | `reposition` | List message indices after which to compact retained KV positions. Optional; independent of `drop_message`. |
-| `drop_rule` | Alternative structured rule: `message_drop` or `thinking_drop`. Do not combine it with `drop_message`. (We will further release more drop rules, see how to use it in examples)|
 
 Context requests report `cached_tokens`, `drop_skipped_tokens`, and `repos_tokens` in `response.usage.prompt_tokens_details`, including zero values.
 
