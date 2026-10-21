@@ -5,6 +5,8 @@
 
   <p>
     <a href="https://fuvty.github.io/thinking_yard_project_page/projects/akv/">🌐 <b>Project Page</b></a>
+    •
+    <a href="https://arxiv.org/pdf/2610.28577">📑 <b>Paper</b></a>
   </p>
 </div>
 
@@ -13,6 +15,16 @@ AKV brings KV cache engineering to LLM agents. It combines agent-side policies f
 - `akv.agent` is the algorithm component that decides which messages to drop from the KV cache and when to reposition retained tokens.
 - `akv.system` executes cache operations through SGLang's OpenAI-compatible Chat Completions API.
 
+If you find AKV useful, please consider citing our paper:
+
+```bibtex
+@article{fu2026akv,
+    title={Cache Engineering for Agents},
+    author={Tianyu Fu and Ruoxi Wang and Zihan Min and Zhongqi Ren and Zhihao Li and Tengxuan Liu and Shengxu Mu and Hanling Zhang and Yu Wang},
+    journal={arXiv preprint arXiv:2610.28577},
+    year={2026},
+}
+```
 
 ## Environment Setup
 
@@ -336,3 +348,66 @@ Drop/Reposition is currently enabled for these text-model architectures:
 
 
 See the [system README](akv/system/README.md) for runtime requirements and compatibility details.
+
+## Related Projects
+
+Explore more efficient LLM projects from us:
+
+<table style="border: none; border-collapse: collapse;" align="center">
+<tr>
+<td align="center" valign="top" width="16.67%" style="border: none; border-right: 1px solid rgba(128, 128, 128, 0.3); padding: 10px; min-width: 50px;">
+<div style="height: 5em; display: flex; align-items: center; justify-content: center;">
+<a href="https://github.com/thu-nics/R2R">
+<img src="https://raw.githubusercontent.com/thu-nics/R2R/main/resource/logo.png" alt="R2R Logo" style="max-height: 5em; max-width: 100%; height: auto; width: auto;" />
+</a>
+</div>
+<a href="https://github.com/thu-nics/R2R"><b>R2R</b></a>
+<br/><sub>Token-level routing for reasoning LLMs</sub>
+</td>
+<td align="center" valign="top" width="16.67%" style="border: none; border-right: 1px solid rgba(128, 128, 128, 0.3); padding: 10px; min-width: 50px;">
+<div style="height: 5em; display: flex; align-items: center; justify-content: center;">
+<a href="https://github.com/thu-nics/TokenRouter">
+<img src="https://raw.githubusercontent.com/thu-nics/TokenRouter/main/resource/logo.png" alt="TokenRouter Logo" style="max-height: 5em; max-width: 100%; height: auto; width: auto;" />
+</a>
+</div>
+<a href="https://github.com/thu-nics/TokenRouter"><b>TkR</b></a>
+<br/><sub>Efficient serving for token-level LLM routing</sub>
+</td>
+<td align="center" valign="top" width="16.67%" style="border: none; border-right: 1px solid rgba(128, 128, 128, 0.3); padding: 10px; min-width: 50px;">
+<div style="height: 5em; display: flex; align-items: center; justify-content: center;">
+<a href="https://github.com/thu-nics/TaH">
+<img src="https://raw.githubusercontent.com/thu-nics/TaH/main/resource/logo.png" alt="TaH Logo" style="max-height: 5em; max-width: 100%; height: auto; width: auto;" />
+</a>
+</div>
+<a href="https://github.com/thu-nics/TaH"><b>TaH</b></a>
+<br/><sub>Adaptive Looped LLMs</sub>
+</td>
+<td align="center" valign="top" width="16.67%" style="border: none; border-right: 1px solid rgba(128, 128, 128, 0.3); padding: 10px; min-width: 50px;">
+<div style="height: 5em; display: flex; align-items: center; justify-content: center;">
+<a href="https://github.com/thu-nics/C2C">
+<img src="https://raw.githubusercontent.com/thu-nics/C2C/main/resource/logo.png" alt="C2C Logo" style="max-height: 5em; max-width: 100%; height: auto; width: auto;" />
+</a>
+</div>
+<a href="https://github.com/thu-nics/C2C"><b>C2C</b></a>
+<br/><sub>Communicate through KV-Cache between LLMs</sub>
+</td>
+<td align="center" valign="top" width="16.67%" style="border: none; border-right: 1px solid rgba(128, 128, 128, 0.3); padding: 10px; min-width: 50px;">
+<div style="height: 5em; display: flex; align-items: center; justify-content: center;">
+<a href="https://github.com/thu-nics/FrameFusion">
+<img src="https://raw.githubusercontent.com/thu-nics/FrameFusion/main/example/image/logo.png" alt="FrameFusion Logo" style="max-height: 5em; max-width: 100%; height: auto; width: auto;" />
+</a>
+</div>
+<a href="https://github.com/thu-nics/FrameFusion"><b>FrF</b></a>
+<br/><sub>Efficient video token reduction for LVLMs</sub>
+</td>
+<td align="center" valign="top" width="16.67%" style="border: none; padding: 10px; min-width: 50px;">
+<div style="height: 5em; display: flex; align-items: center; justify-content: center;">
+<a href="https://github.com/thu-nics/MoA">
+<img src="https://raw.githubusercontent.com/thu-nics/MoA/master/resource/logo.png" alt="MoA Logo" style="max-height: 5em; max-width: 100%; height: auto; width: auto;" />
+</a>
+</div>
+<a href="https://github.com/thu-nics/MoA"><b>MoA</b></a>
+<br/><sub>Mixture of sparse attention for LLMs</sub>
+</td>
+</tr>
+</table>
