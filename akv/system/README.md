@@ -84,7 +84,7 @@ response = requests.post(
         "model": "Qwen/Qwen3-0.6B",
         "messages": [
             {"role": "system", "content": "You are a helpful assistant."},
-            {"role": "user", "content": "The capical of France is Paris."},
+            {"role": "user", "content": "The capital of France is Paris."},
             {"role": "assistant", "content": "I have read the note."},
             {"role": "user", "content": "What is the capital of France?"},
         ],
